@@ -1,8 +1,9 @@
 import React, { useState, useMemo, useEffect } from "react";
+import * as XLSX from "xlsx";
 import {
   ArrowLeft, ArrowRight, Box, Plus, Truck, ChevronDown, MapPin, Weight,
   Calendar, HelpCircle, Sprout, Package, MessageCircle, Check, X, CheckCircle2,
-  Wrench, ShoppingCart,
+  Wrench, ShoppingCart, Shield,
 } from "lucide-react";
 
 
@@ -38,6 +39,7 @@ const ROLES = {
       { id: "servicios", label: "Servicios", icon: Wrench },
       { id: "solicitudes", label: "Repuestos", icon: ShoppingCart },
       { id: "presupuestos", label: "Presupuestos", icon: Package },
+      { id: "seguros", label: "Seguros", icon: Shield },
       { id: "historial", label: "Historial", icon: CheckCircle2 },
     ],
   },
@@ -48,6 +50,7 @@ const ROLES = {
       { id: "disponibles", label: "Pedidos Disponibles", icon: Box },
       { id: "mispedidos", label: "Mis Pedidos", icon: Truck },
       { id: "solicitudes", label: "Repuestos", icon: ShoppingCart },
+      { id: "seguros", label: "Seguros", icon: Shield },
       { id: "historial", label: "Historial", icon: CheckCircle2 },
     ],
   },
@@ -58,14 +61,26 @@ const ROLES = {
       { id: "misservicios", label: "Mis Servicios", icon: Wrench },
       { id: "crearservicio", label: "Publicar", icon: Plus },
       { id: "solicitudes", label: "Repuestos", icon: ShoppingCart },
+      { id: "seguros", label: "Seguros", icon: Shield },
     ],
   },
   comercio: {
     accent: "#dc2626", soft: "#fee2e2", Icon: ShoppingCart,
     title: "Panel del Comercio", user: "Agro Repuestos SRL", initials: "AR",
+    localidad: "San Nicolás de los Arroyos", provincia: "Buenos Aires",
     tabs: [
       { id: "solicitudes", label: "Solicitudes", icon: ShoppingCart },
       { id: "presupuestos", label: "Presupuestos", icon: Package },
+      { id: "seguros", label: "Seguros", icon: Shield },
+    ],
+  },
+  seguros: {
+    accent: "#a855f7", soft: "#f3e8ff", Icon: Shield,
+    title: "Panel del Asesor de Seguros", user: "Lucía Fernández", initials: "LF",
+    localidad: "Rosario", provincia: "Santa Fe",
+    tabs: [
+      { id: "segsolicitudes", label: "Solicitudes", icon: ShoppingCart },
+      { id: "cargas", label: "Cargas Aseguradas", icon: Shield },
     ],
   },
 };
@@ -75,6 +90,7 @@ const ROLES = {
 const ME_TRANSPORTISTA = "Carlos Méndez";
 const ME_CONTRATISTA = "Roberto Campos";
 const ME_COMERCIO = "Agro Repuestos SRL";
+const ME_SEGUROS = "Lucía Fernández";
 
 const ACTIVIDADES = [
   { id: "agricola", label: "Agrícola", emoji: "🌾" },
@@ -89,10 +105,11 @@ const ACT_LABELS = {
 };
 // Categorías para presupuestos formales
 const PRESUPUESTO_CATS = {
-  agricola: ["Agroquímicos", "Semillas", "Fertilizantes", "Silobolsa", "Otro"],
-  ganadero: ["Productos Veterinarios", "Suplementos Dietarios", "Alimentos Balanceados", "Caravanas / Identificación", "Otro"],
-  general: ["Repuestos", "Combustible", "Lubricantes", "Otro"],
+  agricola: ["Agroquímicos", "Semillas", "Fertilizantes", "Silobolsa"],
+  ganadero: ["Productos Veterinarios", "Suplementos Dietarios", "Alimentos Balanceados", "Caravanas / Identificación"],
+  general: ["Repuestos", "Combustible", "Lubricantes"],
 };
+const FORMAS_PAGO_COMERCIO = ["Contado", "Transferencia bancaria", "Cuenta corriente", "Cheque", "Tarjeta de crédito", "Canje de granos"];
 
 const INITIAL_ORDERS = [];
 
@@ -103,6 +120,11 @@ const URGENCIAS = [
   { id: "normal", label: "Normal", bg: "#fef3c7", c: "#92400e" },
   { id: "puede_esperar", label: "Puede esperar", bg: "#f3f4f6", c: "#6b7280" },
 ];
+const TIPOS_SEGURO = [
+  "Accidentes personales", "Seguro laboral (ART)", "Automotor", "Maquinaria agrícola", "Vida",
+  "Agrario - Granizo", "Agrario - Inundación", "Agrario - Sequía", "Agrario - Multirriesgo de cosecha", "Otro",
+];
+const INITIAL_SEGUROS_SOLICITUDES = [];
 
 const INITIAL_SERVICES = [
   { id: 201, tipo: "Cosechadora", descripcion: "John Deere S770 con plataforma sojera 35 pies. Disponible para campaña gruesa.", localidad: "Venado Tuerto", provincia: "Santa Fe", lat: -33.7497, lng: -61.9669, precio: "USD 18/ha", disponibilidad: "Inmediata", owner: "Roberto Campos" },
@@ -180,6 +202,126 @@ function gmapsLink(lat, lng) { return `https://www.google.com/maps?q=${lat},${ln
 
 const peso = (n) => "$ " + Number(n).toLocaleString("es-AR");
 const norm = (s) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+/* ---- Planilla de presupuesto: generación y lectura (XLSX real, ida y vuelta) ---- */
+// El productor solo completa estas 3 (lo único que le corresponde a él)
+const PRESUP_HEADERS_SOL = ["PRODUCTO", "UNIDAD (kilos/litros)", "CANTIDAD"];
+// El comercio recibe esas 3 ya cargadas y completa el resto para armar su cotización
+const PRESUP_HEADERS_COT = [
+  "PRODUCTO", "UNIDAD (kilos/litros)", "CANTIDAD",
+  "PRECIO POR ENVASE", "ENVASE (ej: 5 kilos, 1 litro)", "CANTIDAD NECESARIA SEGÚN PEDIDO", "IVA (10,5% o 21%)",
+  "NOMBRE COMERCIAL DEL PRODUCTO", "COSTO DE ENVÍO", "IVA DE ENVÍO (10,5% o 21%)", "OBSERVACIONES",
+];
+const slugFile = (s) => (s || "presupuesto").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "presupuesto";
+
+function membreteRows({ titulo, categorias, localidad, provincia, solicitante, fecha, extra }) {
+  const rows = [
+    ["CARRETA — PEDIDO DE PRESUPUESTO"],
+    [`Solicitante: ${solicitante || "—"}`],
+    [`Categorías dirigidas a: ${(categorias || []).join(", ") || "—"}`],
+    [`Localidad de entrega: ${localidad || "—"}, ${provincia || "—"}`],
+    [`Título del pedido: ${titulo || "—"}`],
+    [`Fecha: ${fecha || new Date().toISOString().slice(0, 10)}`],
+  ];
+  if (extra) rows.push([extra]);
+  rows.push([]);
+  return rows;
+}
+const PRESUP_COLS_COT = [{ wch: 26 }, { wch: 18 }, { wch: 11 }, { wch: 16 }, { wch: 22 }, { wch: 24 }, { wch: 14 }, { wch: 26 }, { wch: 14 }, { wch: 18 }, { wch: 30 }];
+const PRESUP_COLS_SOL = PRESUP_COLS_COT.slice(0, 3);
+
+// Arma y descarga la planilla vacía que el productor completa: solo Producto, Unidad, Cantidad
+function descargarPlanillaSolicitud({ titulo, categorias, localidad, provincia, solicitante }) {
+  const rows = membreteRows({ titulo, categorias, localidad, provincia, solicitante });
+  rows.push(PRESUP_HEADERS_SOL);
+  for (let i = 0; i < 15; i++) rows.push(["", "", ""]);
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws["!cols"] = PRESUP_COLS_SOL;
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Presupuesto");
+  XLSX.writeFile(wb, `pedido-presupuesto-${slugFile(titulo)}.xlsx`);
+}
+
+// Arma y descarga la planilla para que el comercio cotice, ya con Producto/Unidad/Cantidad precargados
+function descargarPlanillaCotizacion({ titulo, categorias, localidad, provincia, solicitante, productos, comercio }) {
+  const rows = membreteRows({ titulo, categorias, localidad, provincia, solicitante, extra: `Cotización a completar por: ${comercio || "—"}` });
+  rows.push(PRESUP_HEADERS_COT);
+  (productos || []).forEach((p) => rows.push([p.nombre, p.unidad === "l" ? "litros" : "kilos", p.cantidad, "", "", "", "", "", "", "", ""]));
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws["!cols"] = PRESUP_COLS_COT;
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Presupuesto");
+  XLSX.writeFile(wb, `cotizacion-${slugFile(titulo)}.xlsx`);
+}
+
+// Descarga la cotización YA RECIBIDA de un comercio (para que el solicitante la guarde/comparta)
+function descargarCotizacionRecibida({ titulo, categorias, localidad, provincia, solicitante, r }) {
+  const rows = membreteRows({
+    titulo, categorias, localidad, provincia, solicitante,
+    extra: `Cotización recibida de: ${r.by || "—"}${r.validez ? `  ·  Validez: ${r.validez}` : ""}${r.formasPago && r.formasPago.length ? `  ·  Formas de pago: ${r.formasPago.join(", ")}` : ""}`,
+  });
+  rows.push(PRESUP_HEADERS_COT);
+  (r.items || []).forEach((it) => rows.push([
+    it.nombre, it.unidad === "l" || unidadFromText(it.unidad) === "l" ? "litros" : "kilos", it.cantidad,
+    it.precioEnvase, it.envase, it.cantidadNecesaria, it.ivaPct ? `${it.ivaPct}%` : "",
+    it.nombreComercial || "", it.costoEnvio || "", it.ivaEnvioPct ? `${it.ivaEnvioPct}%` : "", it.observaciones || "",
+  ]));
+  rows.push([]);
+  rows.push(["", "", "", "", "", "", "", "", "", "", `Neto: ${peso(r.neto || 0)}`]);
+  rows.push(["", "", "", "", "", "", "", "", "", "", `IVA: ${peso(r.ivaTotal || 0)}`]);
+  if (r.envioTotal) rows.push(["", "", "", "", "", "", "", "", "", "", `Envío: ${peso(r.envioTotal)}`]);
+  if (r.ivaEnvioTotal) rows.push(["", "", "", "", "", "", "", "", "", "", `IVA envío: ${peso(r.ivaEnvioTotal)}`]);
+  rows.push(["", "", "", "", "", "", "", "", "", "", `TOTAL: ${r.total != null ? peso(r.total) : r.precio}`]);
+  if (r.nota) rows.push([`Notas: ${r.nota}`]);
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws["!cols"] = PRESUP_COLS_COT;
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Cotización");
+  XLSX.writeFile(wb, `cotizacion-recibida-${slugFile(r.by)}-${slugFile(titulo)}.xlsx`);
+}
+
+const unidadFromText = (s) => (norm(s).includes("lit") ? "l" : "kg");
+
+// Lee un archivo .xlsx subido y devuelve las filas de datos (después del encabezado PRODUCTO).
+// Sirve para las dos planillas: la del pedido (3 columnas) y la de cotización (11) —
+// las columnas de más quedan undefined si el archivo es el del pedido, sin problema.
+function leerPlanilla(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const wb = XLSX.read(reader.result, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const grid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+        const headerIdx = grid.findIndex((r) => String(r[0] || "").trim().toUpperCase() === "PRODUCTO");
+        if (headerIdx === -1) { reject(new Error("No encontré la fila de encabezado (PRODUCTO). ¿Es la planilla correcta?")); return; }
+        const data = [];
+        for (let i = headerIdx + 1; i < grid.length; i++) {
+          const r = grid[i];
+          if (!r || !String(r[0] || "").trim()) continue; // fila vacía = fin de datos
+          data.push({
+            nombre: String(r[0] || "").trim(),
+            unidad: r[1],
+            cantidad: r[2],
+            precioEnvase: r[3],
+            envase: r[4],
+            cantidadNecesaria: r[5],
+            iva: r[6],
+            nombreComercial: r[7],
+            costoEnvio: r[8],
+            ivaEnvio: r[9],
+            observaciones: r[10],
+          });
+        }
+        resolve(data);
+      } catch (err) { reject(err); }
+    };
+    reader.onerror = () => reject(new Error("No pude leer el archivo."));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+
 // Distancia en km entre dos coordenadas (Haversine)
 function distKm(a, b) {
   if (!a || !b || a.lat == null || b.lat == null) return null;
@@ -222,21 +364,59 @@ function LocationInput({ localidad, provincia, onLocalidad, onProvincia, accent,
   );
 }
 
+/* ============================ MIS LOCALIDADES (filtro + agregar zonas de cobertura) ============================ */
+function MisLocalidades({ localidades, onAdd, onRemove, verTodas, onToggleVerTodas, accent, soft }) {
+  const [loc, setLoc] = useState("");
+  const [prov, setProv] = useState("");
+  const add = () => { if (loc && prov) { onAdd({ localidad: loc, provincia: prov }); setLoc(""); setProv(""); } };
+  return (
+    <div className="cr-mislocs">
+      <div className="cr-mislocs-head">
+        <MapPin size={15} color={accent} />
+        <strong>Mis localidades</strong>
+        <span>— vas a ver los pedidos de estas zonas. Agregá más para ampliar dónde podés ofertar.</span>
+      </div>
+      <div className="cr-mislocs-chips">
+        {localidades.map((l, i) => (
+          <span className="cr-misloc-chip" key={i} style={{ background: soft, color: accent }}>
+            {l.localidad}, {l.provincia}
+            {localidades.length > 1 && <button type="button" onClick={() => onRemove(i)} aria-label="Quitar"><X size={12} /></button>}
+          </span>
+        ))}
+      </div>
+      <div className="cr-mislocs-add">
+        <LocationInput localidad={loc} provincia={prov} accent={accent} placeholder="Agregar localidad"
+          onLocalidad={setLoc} onProvincia={setProv} />
+        <button type="button" className="cr-btn cr-btn-ghost" style={{ fontSize: 12.5 }} disabled={!loc || !prov} onClick={add}>
+          <Plus size={13} /> Agregar
+        </button>
+      </div>
+      <label className="cr-mislocs-toggle">
+        <input type="checkbox" checked={verTodas} onChange={(e) => onToggleVerTodas(e.target.checked)} />
+        Ver pedidos de todo el país (sin filtrar por localidad)
+      </label>
+    </div>
+  );
+}
+
 /* ============================ LANDING ============================ */
 function Landing({ onPick }) {
   const cards = [
     { id: "productor", accent: "#22c55e", tint: "rgba(34,197,94,0.16)", Icon: Sprout,
-      title: "Soy Productor", desc: "Creá pedidos de flete, contratá servicios de maquinaria y pedí repuestos.",
+      title: "Productor", desc: "Creá pedidos de flete, contratá servicios de maquinaria y pedí repuestos.",
       points: ["Publicar pedidos de carga", "Ver servicios de contratistas", "Solicitar repuestos e insumos"] },
     { id: "transportista", accent: "#60a5fa", tint: "rgba(59,130,246,0.18)", Icon: Truck,
-      title: "Soy Transportista", desc: "Explorá pedidos disponibles, enviá tu oferta y gestioná tus viajes.",
+      title: "Transportista", desc: "Explorá pedidos disponibles, enviá tu oferta y gestioná tus viajes.",
       points: ["Ver pedidos en tu zona", "Enviar ofertas de precio", "Pedir repuestos para tu camión"] },
     { id: "contratista", accent: "#f59e0b", tint: "rgba(245,158,11,0.18)", Icon: Wrench,
-      title: "Soy Contratista", desc: "Publicá tus servicios de maquinaria y llegá a productores de todo el país.",
+      title: "Contratista", desc: "Publicá tus servicios de maquinaria y llegá a productores de todo el país.",
       points: ["Publicar cosechadoras, sembradoras…", "Que los productores te encuentren", "Solicitar repuestos para tu equipo"] },
     { id: "comercio", accent: "#f87171", tint: "rgba(248,113,113,0.18)", Icon: ShoppingCart,
-      title: "Soy Comercio", desc: "Mirá qué necesitan productores, transportistas y contratistas y ofreceles tus productos.",
+      title: "Comercio", desc: "Mirá qué necesitan productores, transportistas y contratistas y ofreceles tus productos.",
       points: ["Ver solicitudes de repuestos", "Responder con precio y stock", "Conectar directo con el comprador"] },
+    { id: "seguros", accent: "#a855f7", tint: "rgba(168,85,247,0.16)", Icon: Shield,
+      title: "Asesor Seguros", desc: "Mirá las cargas confirmadas y su cobertura para ofrecer tus pólizas.",
+      points: ["Ver cargas con seguro contratado", "Detalle de monto y transportista", "Detectar cargas para asegurar"] },
   ];
   const stats = [
     { icon: Package, value: "1.240+", label: "Pedidos activos" },
@@ -290,6 +470,7 @@ function OrderCard({ order, accent, soft, onOpen }) {
   const n = order.offers.length;
   const al = ACT_LABELS[order.actividad] || ACT_LABELS.agricola;
   const ab = al.badge;
+  const accKm = (order.offers || []).find((o) => o.status === "aceptada")?.km;
   return (
     <div className="cr-card" onClick={onOpen}>
       <div className="cr-card-main">
@@ -302,7 +483,7 @@ function OrderCard({ order, accent, soft, onOpen }) {
           </div>
           <div className="cr-card-route">
             <MapPin size={14} color="#9ca3af" />
-            <span>{order.localidad} → {order.to}{order.km ? ` · ${order.km} km` : ""}</span>
+            <span>{order.localidad} → {order.to}{accKm ? ` · ${accKm} km` : ""}</span>
           </div>
           <div className="cr-card-meta">
             <span className="cr-meta-item"><Weight size={14} color="#9ca3af" /> {Number(order.kilos).toLocaleString("es-AR")} {al.unit}</span>
@@ -326,6 +507,7 @@ function OfferForm({ order, accent, onSendOffer }) {
   const al = ACT_LABELS[order.actividad] || ACT_LABELS.agricola;
   const semi = semiLabel(order.actividad);
   const [price, setPrice] = useState("");
+  const [km, setKm] = useState("");
   const [trucks, setTrucks] = useState(String(need || 1));
   const [note, setNote] = useState("");
   const [seguro, setSeguro] = useState("");
@@ -345,15 +527,15 @@ function OfferForm({ order, accent, onSendOffer }) {
   const setVeh = (i, field, val) => setVehs((vs) => vs.map((v, j) => j === i ? { ...v, [field]: field === "chofer" ? val : field === "cuitChofer" ? val.replace(/[^\d\-]/g, "") : val.toUpperCase() } : v));
   const allVehOk = vehs.every((v) => validDominio(v.chasis) && validDominio(v.semi) && v.chofer.trim() && validCuit(v.cuitChofer));
   const isGan = order.actividad === "ganadero";
-  const canSend = (isGan ? price : price) && allVehOk && razonSocial.trim() && validCuit(cuitTransp);
+  const canSend = price && Number(km) > 0 && allVehOk && razonSocial.trim() && validCuit(cuitTransp);
   const send = () => {
     if (!canSend) return;
     onSendOffer(order.id, {
       id: Date.now(), by: ME_TRANSPORTISTA, razonSocial: razonSocial.trim(), cuitTransp: normCuit(cuitTransp),
-      price: Number(price), seguro: Number(seguro) || 0, peajes: Number(peajes) || 0,
+      price: Number(price), km: Number(km) || 0, seguro: Number(seguro) || 0, peajes: Number(peajes) || 0,
       precioPorKm: isGan ? Number(price) || 0 : undefined,
       precioTotal: isGan
-        ? (((Number(price) || 0) * (order.km || 0)) + (Number(seguro) || 0) + (Number(peajes) || 0)) * n
+        ? (((Number(price) || 0) * (Number(km) || 0)) + (Number(seguro) || 0) + (Number(peajes) || 0)) * n
         : (Number(price) || 0) * ((Number(order.kilos) || 0) / 1000) + (Number(seguro) || 0) + (Number(peajes) || 0),
       camiones: n, note, status: "enviada",
       vehiculos: vehs.map((v) => ({ chasis: normDom(v.chasis), semi: normDom(v.semi), chofer: v.chofer.trim(), cuitChofer: normCuit(v.cuitChofer) })),
@@ -372,6 +554,7 @@ function OfferForm({ order, accent, onSendOffer }) {
         </div>
       </div>
       <div className="cr-form-grid" style={{ marginTop: 12 }}>
+        <div className="cr-field"><label>Km del recorrido</label><input value={km} onChange={(e) => setKm(e.target.value.replace(/\D/g, ""))} placeholder="Ej: 350" /></div>
         {isGan ? (
           <>
             <div className="cr-field"><label>Flete ($ por km)</label><input value={price} onChange={(e) => setPrice(e.target.value.replace(/\D/g, ""))} placeholder="Ej: 1500" /></div>
@@ -389,8 +572,8 @@ function OfferForm({ order, accent, onSendOffer }) {
       </div>
       {isGan && (Number(price) > 0 || Number(seguro) > 0 || Number(peajes) > 0) && (
         <p className="cr-hint" style={{ fontWeight: 600, color: "#166534", marginTop: 6 }}>
-          Total ofertado: {peso((((Number(price) || 0) * (order.km || 0)) + (Number(seguro) || 0) + (Number(peajes) || 0)) * n)}
-          {order.km ? ` (${peso(Number(price) || 0)}/km × ${order.km} km + seguro + peajes) × ${n} ${al.vehiculo}` : " (cargá km en el pedido para calcular el flete)"}
+          Total ofertado: {peso((((Number(price) || 0) * (Number(km) || 0)) + (Number(seguro) || 0) + (Number(peajes) || 0)) * n)}
+          {Number(km) > 0 ? ` (${peso(Number(price) || 0)}/km × ${km} km + seguro + peajes) × ${n} ${al.vehiculo}` : " (cargá los km del recorrido para calcular el flete)"}
         </p>
       )}
       {!isGan && (Number(price) > 0 || Number(seguro) > 0 || Number(peajes) > 0) && (() => {
@@ -463,6 +646,7 @@ function OrderDetail({ order, role, accent, soft, onBack, onConfirm, onSendOffer
   const isEntregado = status === "Entregado";
   const isFinalizado = status === "Finalizado";
   const myOffer = order.offers.find((o) => o.by === ME_TRANSPORTISTA);
+  const accOffer = order.offers.find((o) => o.status === "aceptada");
   const al = ACT_LABELS[order.actividad] || ACT_LABELS.agricola;
   const [editingVeh, setEditingVeh] = useState(null); // index del vehículo que se edita
   const [editData, setEditData] = useState({ chasis: "", semi: "", chofer: "" });
@@ -473,10 +657,12 @@ function OrderDetail({ order, role, accent, soft, onBack, onConfirm, onSendOffer
   const [entregaObs, setEntregaObs] = useState("");
   const [showCalifForm, setShowCalifForm] = useState(false);
   const [calif, setCalif] = useState({ c1: 0, c2: 0, c3: 0, comentario: "" });
+  const [showRecepcionForm, setShowRecepcionForm] = useState(false);
+  const [recepcionData, setRecepcionData] = useState({ acuerdoFinal: "", formaPago: "" });
   const [incMotivo, setIncMotivo] = useState(CONTINGENCIA_MOTIVOS[0]);
   const [incDesc, setIncDesc] = useState("");
-  const startEdit = () => { setEf({ localidad: order.localidad, provincia: order.provincia, to: order.to, kilos: String(order.kilos), km: String(order.km || ""), camiones: String(order.camiones), date: order.date, cargo: order.cargo, mapsOrigen: order.mapsOrigen || "", mapsDest: order.mapsDest || "" }); setEditing(true); };
-  const saveEdit = () => { onEdit(order.id, { localidad: ef.localidad, provincia: ef.provincia, to: ef.to, kilos: Number(ef.kilos), km: Number(ef.km) || null, camiones: Number(ef.camiones), date: ef.date, cargo: ef.cargo, mapsOrigen: ef.mapsOrigen, mapsDest: ef.mapsDest }); setEditing(false); };
+  const startEdit = () => { setEf({ localidad: order.localidad, provincia: order.provincia, to: order.to, kilos: String(order.kilos), camiones: String(order.camiones), date: order.date, cargo: order.cargo, mapsOrigen: order.mapsOrigen || "", mapsDest: order.mapsDest || "" }); setEditing(true); };
+  const saveEdit = () => { onEdit(order.id, { localidad: ef.localidad, provincia: ef.provincia, to: ef.to, kilos: Number(ef.kilos), camiones: Number(ef.camiones), date: ef.date, cargo: ef.cargo, mapsOrigen: ef.mapsOrigen, mapsDest: ef.mapsDest }); setEditing(false); };
   const sef = (k) => (e) => setEf({ ...ef, [k]: e.target.value });
 
   return (
@@ -494,7 +680,7 @@ function OrderDetail({ order, role, accent, soft, onBack, onConfirm, onSendOffer
             </div>
             <div className="cr-card-route" style={{ marginTop: 8 }}>
               <MapPin size={15} color="#9ca3af" />
-              <span>{order.localidad} → {order.to}{order.km ? ` · ${order.km} km` : ""}</span>
+              <span>{order.localidad} → {order.to}{accOffer?.km ? ` · ${accOffer.km} km` : ""}</span>
             </div>
           </div>
         </div>
@@ -502,7 +688,7 @@ function OrderDetail({ order, role, accent, soft, onBack, onConfirm, onSendOffer
           <div><span className="cr-detail-k">Carga</span><span className="cr-detail-v">{order.cargo}</span></div>
           <div><span className="cr-detail-k">{al.unitLabel.replace(/\(.*\)/, "").trim()}</span><span className="cr-detail-v">{Number(order.kilos).toLocaleString("es-AR")} {al.unit}</span></div>
           <div><span className="cr-detail-k">{al.vehiculoLabel}</span><span className="cr-detail-v">{order.jaulasSimples != null ? `${order.jaulasSimples} simple${order.jaulasSimples!==1?"s":""} + ${order.jaulasDobles || 0} doble${(order.jaulasDobles||0)!==1?"s":""}` : order.camiones}</span></div>
-          <div><span className="cr-detail-k">Distancia</span><span className="cr-detail-v">{order.km ? order.km + " km" : "—"}</span></div>
+          <div><span className="cr-detail-k">Distancia</span><span className="cr-detail-v">{accOffer?.km ? accOffer.km + " km" : "A informar por el transportista"}</span></div>
           <div><span className="cr-detail-k">Entrega</span><span className="cr-detail-v">{order.date}</span></div>
           <div><span className="cr-detail-k">Productor</span><span className="cr-detail-v">{order.owner}</span></div>
           <div><span className="cr-detail-k">Origen</span><span className="cr-detail-v">{order.localidad}, {order.provincia}
@@ -549,9 +735,6 @@ function OrderDetail({ order, role, accent, soft, onBack, onConfirm, onSendOffer
             <div className="cr-field"><label>Destino</label><input value={ef.to} onChange={sef("to")} /></div>
             <div className="cr-field"><label>{al.unitLabel}</label>
               <input value={ef.kilos} onChange={(e) => setEf({ ...ef, kilos: e.target.value.replace(/\D/g, "") })} />
-            </div>
-            <div className="cr-field"><label>Km del recorrido</label>
-              <input value={ef.km} onChange={(e) => setEf({ ...ef, km: e.target.value.replace(/\D/g, "") })} />
             </div>
             <div className="cr-field"><label>Fecha de entrega</label><input type="date" value={ef.date} onChange={sef("date")} /></div>
             <div className="cr-field full"><label>Link Google Maps origen</label><input value={ef.mapsOrigen} onChange={sef("mapsOrigen")} placeholder="Pegá link de Maps" /></div>
@@ -604,10 +787,39 @@ function OrderDetail({ order, role, accent, soft, onBack, onConfirm, onSendOffer
               </div>
               {role === "productor" && !order.recepcion && (
                 <div style={{ marginTop: 12 }}>
-                  <button className="cr-btn cr-btn-primary" style={{ background: "#16a34a", fontSize: 13 }}
-                    onClick={() => { if (confirm("¿Confirmar la recepción de la carga en destino?")) onRecepcion(order.id); }}>
-                    <Check size={14} /> Confirmar recepción en destino
-                  </button>
+                  {!showRecepcionForm ? (
+                    <button className="cr-btn cr-btn-primary" style={{ background: "#16a34a", fontSize: 13 }}
+                      onClick={() => setShowRecepcionForm(true)}>
+                      <Check size={14} /> Confirmar recepción en destino
+                    </button>
+                  ) : (
+                    <div style={{ marginTop: 4 }}>
+                      <div className="cr-form-grid" style={{ marginBottom: 12 }}>
+                        <div className="cr-field">
+                          <label>Acuerdo final (opcional)</label>
+                          <input value={recepcionData.acuerdoFinal} onChange={(e) => setRecepcionData({ ...recepcionData, acuerdoFinal: e.target.value })} placeholder="Ej: descuento por humedad, ajuste de kg..." />
+                        </div>
+                        <div className="cr-field">
+                          <label>Forma de pago</label>
+                          <select value={recepcionData.formaPago} onChange={(e) => setRecepcionData({ ...recepcionData, formaPago: e.target.value })}>
+                            <option value="">Sin especificar</option>
+                            <option value="Efectivo">Efectivo</option>
+                            <option value="Transferencia bancaria">Transferencia bancaria</option>
+                            <option value="Cheque">Cheque</option>
+                            <option value="Cuenta corriente">Cuenta corriente</option>
+                            <option value="Otro">Otro</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button className="cr-btn cr-btn-primary" style={{ background: "#16a34a", fontSize: 13 }}
+                          onClick={() => { if (confirm("¿Confirmar la recepción de la carga en destino?")) onRecepcion(order.id, recepcionData); }}>
+                          <Check size={14} /> Confirmar recepción
+                        </button>
+                        <button className="cr-btn cr-btn-ghost" style={{ fontSize: 13 }} onClick={() => setShowRecepcionForm(false)}>Cancelar</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -617,6 +829,12 @@ function OrderDetail({ order, role, accent, soft, onBack, onConfirm, onSendOffer
           {order.recepcion && (
             <div className="cr-inc-box" style={{ background: "#f0fdf4", borderColor: "#bbf7d0" }}>
               <h4 style={{ margin: "0 0 4px", fontSize: 13, color: "#166534" }}>✓ Recepción confirmada el {order.recepcion.fecha}</h4>
+              {(order.formaPago || order.acuerdoFinal) && (
+                <div style={{ fontSize: 13, color: "#374151", lineHeight: 1.6, marginTop: 6 }}>
+                  {order.formaPago && <div><strong>Forma de pago:</strong> {order.formaPago}</div>}
+                  {order.acuerdoFinal && <div><strong>Acuerdo final:</strong> {order.acuerdoFinal}</div>}
+                </div>
+              )}
             </div>
           )}
 
@@ -716,12 +934,13 @@ function OrderDetail({ order, role, accent, soft, onBack, onConfirm, onSendOffer
                   )}
                   {of.note && <div className="cr-offer-note">“{of.note}”</div>}
                   {order.actividad === "ganadero" && of.seguro != null && (() => {
-                    const flete = (of.price || 0) * (order.km || 0);
+                    const flete = (of.price || 0) * (of.km || 0);
                     const porJaula = flete + (of.seguro || 0) + (of.peajes || 0);
                     const total = porJaula * (of.camiones || 1);
                     return (
                       <div className="cr-offer-desglose">
-                        <span>Flete: {peso(of.price)}/km{order.km ? ` × ${order.km} km = ${peso(flete)}` : ""}</span>
+                        <span>Recorrido: {of.km || 0} km</span>
+                        <span>Flete: {peso(of.price)}/km{of.km ? ` × ${of.km} km = ${peso(flete)}` : ""}</span>
                         <span>Seguro: {peso(of.seguro)}/jaula</span>
                         <span>Peajes: {peso(of.peajes || 0)}/jaula</span>
                         <span>Por jaula: {peso(porJaula)}</span>
@@ -735,6 +954,7 @@ function OrderDetail({ order, role, accent, soft, onBack, onConfirm, onSendOffer
                     const total = flete + (of.seguro || 0) + (of.peajes || 0);
                     return (
                       <div className="cr-offer-desglose">
+                        {of.km ? <span>Recorrido: {of.km} km</span> : null}
                         <span>Flete: {peso(of.price)}/tn × {toneladas.toLocaleString("es-AR")} tn = {peso(flete)}</span>
                         <span>Seguro: {peso(of.seguro || 0)}</span>
                         <span>Peajes: {peso(of.peajes || 0)}</span>
@@ -746,7 +966,7 @@ function OrderDetail({ order, role, accent, soft, onBack, onConfirm, onSendOffer
                 <div className="cr-offer-right">
                   <div className="cr-offer-price">{(() => {
                     if (order.actividad === "ganadero" && of.seguro != null) {
-                      const flete = (of.price || 0) * (order.km || 0);
+                      const flete = (of.price || 0) * (of.km || 0);
                       const total = (flete + (of.seguro || 0) + (of.peajes || 0)) * (of.camiones || 1);
                       return <>{peso(total)}<span> total</span></>;
                     }
@@ -837,12 +1057,13 @@ function OrderDetail({ order, role, accent, soft, onBack, onConfirm, onSendOffer
                 </div>
                 <div className="cr-offer-trucks" style={{ color: "#1d4ed8" }}><Truck size={13} /> {myOffer.camiones} {al.vehiculo}</div>
                 {order.actividad === "ganadero" && myOffer.seguro != null && (() => {
-                  const flete = (myOffer.price || 0) * (order.km || 0);
+                  const flete = (myOffer.price || 0) * (myOffer.km || 0);
                   const porVeh = flete + (myOffer.seguro || 0) + (myOffer.peajes || 0);
                   const total = porVeh * (myOffer.camiones || 1);
                   return (
                     <div className="cr-offer-desglose">
-                      <span>Flete: {peso(myOffer.price)}/km{order.km ? ` × ${order.km} km = ${peso(flete)}` : ""}</span>
+                      <span>Recorrido: {myOffer.km || 0} km</span>
+                      <span>Flete: {peso(myOffer.price)}/km{myOffer.km ? ` × ${myOffer.km} km = ${peso(flete)}` : ""}</span>
                       <span>Seguro: {peso(myOffer.seguro || 0)}/jaula</span>
                       <span>Peajes: {peso(myOffer.peajes || 0)}/jaula</span>
                       <span>Por vehículo: {peso(porVeh)}</span>
@@ -856,6 +1077,7 @@ function OrderDetail({ order, role, accent, soft, onBack, onConfirm, onSendOffer
                   const total = flete + (myOffer.seguro || 0) + (myOffer.peajes || 0);
                   return (
                     <div className="cr-offer-desglose">
+                      {myOffer.km ? <span>Recorrido: {myOffer.km} km</span> : null}
                       <span>Flete: {peso(myOffer.price)}/tn × {toneladas.toLocaleString("es-AR")} tn = {peso(flete)}</span>
                       <span>Seguro: {peso(myOffer.seguro || 0)}</span>
                       <span>Peajes: {peso(myOffer.peajes || 0)}</span>
@@ -872,7 +1094,7 @@ function OrderDetail({ order, role, accent, soft, onBack, onConfirm, onSendOffer
               <div className="cr-offer-right">
                 <div className="cr-offer-price">{(() => {
                     if (order.actividad === "ganadero" && myOffer.seguro != null) {
-                      const flete = (myOffer.price || 0) * (order.km || 0);
+                      const flete = (myOffer.price || 0) * (myOffer.km || 0);
                       const tot = (flete + (myOffer.seguro || 0) + (myOffer.peajes || 0)) * (myOffer.camiones || 1);
                       return <>{peso(tot)}<span> total ({myOffer.camiones} veh.)</span></>;
                     }
@@ -1050,7 +1272,7 @@ function OrderDetail({ order, role, accent, soft, onBack, onConfirm, onSendOffer
 function CrearPedido({ accent, onCreate }) {
   const [act, setAct] = useState("agricola");
   const al = ACT_LABELS[act];
-  const [f, setF] = useState({ cargo: "Soja", cargoOtro: "", localidad: "", provincia: "", lat: null, lng: null, mapsOrigen: "", to: "", toLocalidad: "", toProv: "", toLat: null, toLng: null, mapsDest: "", kilos: "", km: "", camiones: "1", date: "" });
+  const [f, setF] = useState({ cargo: "Soja", cargoOtro: "", localidad: "", provincia: "", lat: null, lng: null, mapsOrigen: "", to: "", toLocalidad: "", toProv: "", toLat: null, toLng: null, mapsDest: "", kilos: "", camiones: "1", date: "" });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   // Ganadero: categorías con cantidades
   const [cats, setCats] = useState(HACIENDA_CATS.map((c) => ({ tipo: c, cantidad: "", kg: "", detalle: "" })));
@@ -1077,7 +1299,7 @@ function CrearPedido({ accent, onCreate }) {
       id: Date.now(), actividad: act, localidad: f.localidad, provincia: f.provincia,
       lat: coordsOrigen ? coordsOrigen.lat : null, lng: coordsOrigen ? coordsOrigen.lng : null, mapsOrigen: f.mapsOrigen || null,
       to: f.to, toLat: coordsDest ? coordsDest.lat : null, toLng: coordsDest ? coordsDest.lng : null, mapsDest: f.mapsDest || null,
-      km: Number(f.km) || null, camiones: Number(f.camiones),
+      camiones: Number(f.camiones),
       date: f.date || "—", owner: "María González", offers: [],
     };
     if (act === "ganadero") {
@@ -1163,10 +1385,9 @@ function CrearPedido({ accent, onCreate }) {
             <label>Punto en Google Maps (destino) {coordsDest && <span style={{ color: "#16a34a", fontSize: 11, fontWeight: 700 }}>✓ detectado</span>}</label>
             <input value={f.mapsDest} onChange={(e) => handleMapsDest(e.target.value)} placeholder="Pegá el link de Google Maps" style={coordsDest ? { borderColor: "#86efac" } : undefined} />
           </div>
-          <div className="cr-field"><label>Km del recorrido</label><input value={f.km} onChange={(e) => setF({ ...f, km: e.target.value.replace(/\D/g, "") })} placeholder="Ej: 350" /></div>
           <div className="cr-field"><label>Fecha de entrega</label><input type="date" value={f.date} onChange={set("date")} /></div>
         </div>
-        <p className="cr-hint">Los transportistas que filtren por tu localidad verán tu solicitud.</p>
+        <p className="cr-hint">Los transportistas que filtren por tu localidad verán tu solicitud. La distancia del recorrido la informa el transportista al hacer su oferta.</p>
         <div style={{ marginTop: 16 }}>
           <button className="cr-new" style={{ background: accent, opacity: ok ? 1 : 0.5 }} disabled={!ok}
             onClick={() => onCreate(buildOrder())}>
@@ -1441,9 +1662,153 @@ function CrearSolicitud({ accent, role, onCreate }) {
   );
 }
 
+/* ============================ SOLICITUD DE SEGURO CARD ============================ */
+function SeguroSolicitudCard({ sol, accent, soft, onOpen }) {
+  const roleBadge = {
+    productor: { l: "Productor", c: "#16a34a" }, transportista: { l: "Transportista", c: "#2563eb" },
+    contratista: { l: "Contratista", c: "#d97706" }, comercio: { l: "Comercio", c: "#dc2626" },
+  };
+  const rb = roleBadge[sol.role] || roleBadge.productor;
+  const activa = (sol.respuestas || []).find((r) => r.status === "activa");
+  return (
+    <div className="cr-card" onClick={onOpen}>
+      <div className="cr-card-main">
+        <div className="cr-card-chip" style={{ background: soft }}><Shield size={20} color={accent} strokeWidth={2} /></div>
+        <div className="cr-card-body">
+          <div className="cr-card-titlerow">
+            <span className="cr-card-cargo">{sol.tipo}</span>
+            {activa && <span className="cr-badge" style={{ background: "#dcfce7", color: "#166534" }}>Póliza activa</span>}
+          </div>
+          <div className="cr-card-route"><MapPin size={14} color="#9ca3af" /><span>{sol.localidad}, {sol.provincia}</span></div>
+          <div className="cr-card-meta">
+            <span className="cr-meta-item" style={{ color: rb.c, fontWeight: 600 }}>{rb.l}</span>
+            <span className="cr-meta-item">· {sol.by}</span>
+            <span className="cr-meta-item"><Calendar size={14} color="#9ca3af" /> {sol.date}</span>
+            {!activa && sol.respuestas.length > 0 && <span className="cr-offers">{sol.respuestas.length} respuesta{sol.respuestas.length > 1 ? "s" : ""}</span>}
+          </div>
+        </div>
+        <ChevronDown size={20} color="#9ca3af" className="cr-chev" style={{ transform: "rotate(-90deg)" }} />
+      </div>
+    </div>
+  );
+}
+
+/* ============================ SOLICITUD DE SEGURO DETAIL ============================ */
+function SeguroSolicitudDetail({ sol, role, accent, soft, onBack, onRespond, onAceptar }) {
+  const [precio, setPrecio] = useState("");
+  const [nota, setNota] = useState("");
+  const activa = (sol.respuestas || []).find((r) => r.status === "activa");
+  const send = () => {
+    if (!nota && !precio) return;
+    onRespond(sol.id, { id: Date.now(), by: ROLES[role]?.user || "—", precio, nota, status: "enviada" });
+    setPrecio(""); setNota("");
+  };
+  return (
+    <div className="cr-content cr-fade">
+      <button className="cr-breadcrumb" onClick={onBack}><ArrowLeft size={16} /> Volver</button>
+      <div className="cr-detail-card">
+        <div className="cr-card-main">
+          <div className="cr-card-chip" style={{ background: soft }}><Shield size={22} color={accent} strokeWidth={2} /></div>
+          <div className="cr-card-body">
+            <div className="cr-card-titlerow">
+              <span className="cr-detail-cargo">{sol.tipo}</span>
+              {activa && <span className="cr-badge" style={{ background: "#dcfce7", color: "#166534" }}>Póliza activa</span>}
+            </div>
+            <div className="cr-card-route" style={{ marginTop: 8 }}><MapPin size={15} color="#9ca3af" /><span>{sol.localidad}, {sol.provincia}</span></div>
+          </div>
+        </div>
+        <div className="cr-detail-grid">
+          <div><span className="cr-detail-k">Solicitante</span><span className="cr-detail-v">{sol.by}</span></div>
+          <div><span className="cr-detail-k">Rol</span><span className="cr-detail-v" style={{ textTransform: "capitalize" }}>{sol.role}</span></div>
+          <div><span className="cr-detail-k">Fecha</span><span className="cr-detail-v">{sol.date}</span></div>
+          <div><span className="cr-detail-k">Tipo de seguro</span><span className="cr-detail-v">{sol.tipo}</span></div>
+        </div>
+        {sol.descripcion && <p style={{ fontSize: 13.5, color: "#374151", lineHeight: 1.6, margin: "16px 0 0", padding: "0 18px 18px" }}>{sol.descripcion}</p>}
+      </div>
+
+      {activa && (
+        <div className="cr-inc-box" style={{ background: "#f0fdf4", borderColor: "#bbf7d0" }}>
+          <h4 style={{ margin: "0 0 8px", fontSize: 14, color: "#166534" }}>✓ Póliza contratada</h4>
+          <div style={{ fontSize: 13, color: "#374151", lineHeight: 1.6 }}>
+            <strong>Nº de póliza:</strong> {activa.poliza} · <strong>Aseguradora:</strong> {activa.by} · <strong>Prima:</strong> {activa.precio || "—"}
+          </div>
+        </div>
+      )}
+
+      <h3 className="cr-h3">Respuestas ({sol.respuestas.length})</h3>
+      {sol.respuestas.length === 0 && <p className="cr-empty">Todavía no hay respuestas para esta solicitud.</p>}
+      {sol.respuestas.map((r) => (
+        <div className="cr-offer" key={r.id}>
+          <div className="cr-offer-av" style={{ background: soft, color: accent }}>{r.by.split(" ").map((w) => w[0]).slice(0, 2).join("")}</div>
+          <div className="cr-offer-info">
+            <div className="cr-offer-name">{r.by}{r.status === "activa" && <span className="cr-badge" style={{ background: "#dcfce7", color: "#166534", marginLeft: 8, fontSize: 11 }}>Contratada</span>}</div>
+            {r.nota && <div className="cr-offer-note">"{r.nota}"</div>}
+          </div>
+          <div className="cr-offer-right">
+            {r.precio && <div className="cr-offer-price">{r.precio}</div>}
+            {role === sol.role && !activa && r.status !== "activa" && (
+              <button className="cr-btn cr-btn-primary" style={{ background: "#16a34a", fontSize: 12 }}
+                onClick={() => { if (confirm("¿Aceptar esta cotización y contratar la póliza?")) onAceptar(sol.id, r.id); }}>
+                <Check size={13} /> Aceptar y contratar
+              </button>
+            )}
+            <a className="cr-btn cr-wpp" href="https://wa.me/" target="_blank" rel="noreferrer"><MessageCircle size={15} /> WhatsApp</a>
+          </div>
+        </div>
+      ))}
+
+      {role === "seguros" && !activa && (
+        <>
+          <h3 className="cr-h3">Responder</h3>
+          <div className="cr-form">
+            <div className="cr-form-grid">
+              <div className="cr-field"><label>Precio / prima</label><input value={precio} onChange={(e) => setPrecio(e.target.value)} placeholder="Ej: $45.000/mes" /></div>
+              <div className="cr-field full"><label>Mensaje</label><input value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Ej: cobertura, franquicia, condiciones…" /></div>
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <button className="cr-btn cr-btn-primary" style={{ background: accent }} onClick={send}>Enviar cotización <ArrowRight size={15} /></button>
+            </div>
+          </div>
+        </>
+      )}
+      <p className="cr-hint">{activa ? "La póliza ya está contratada. Las condiciones finales se coordinan con la aseguradora." : "El precio final y la contratación de la póliza se coordinan directamente por teléfono o WhatsApp."}</p>
+    </div>
+  );
+}
+
+/* ============================ CREAR SOLICITUD DE SEGURO ============================ */
+function CrearSeguroSolicitud({ accent, role, onCreate }) {
+  const [f, setF] = useState({ tipo: TIPOS_SEGURO[0], descripcion: "", localidad: "", provincia: "" });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const ok = f.tipo && f.provincia;
+  return (
+    <div className="cr-form" style={{ marginTop: 16 }}>
+      <div className="cr-form-grid">
+        <div className="cr-field full"><label>Tipo de seguro</label>
+          <select value={f.tipo} onChange={set("tipo")}>{TIPOS_SEGURO.map((t) => <option key={t}>{t}</option>)}</select>
+        </div>
+        <div className="cr-field">
+          <label>Localidad</label>
+          <LocationInput localidad={f.localidad} provincia={f.provincia} accent={accent} placeholder="Tu localidad"
+            onLocalidad={(v) => setF({ ...f, localidad: v })} onProvincia={(v) => setF({ ...f, provincia: v })} />
+        </div>
+        <div className="cr-field full"><label>Detalle (opcional)</label><input value={f.descripcion} onChange={set("descripcion")} placeholder="Qué querés cubrir, cantidad de personas, bienes, hectáreas…" /></div>
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <button className="cr-new" style={{ background: accent, opacity: ok ? 1 : 0.5 }} disabled={!ok}
+          onClick={() => { onCreate({ id: Date.now(), tipo: f.tipo, descripcion: f.descripcion, localidad: f.localidad, provincia: f.provincia, by: ROLES[role]?.user || "—", role, date: new Date().toISOString().slice(0, 10), respuestas: [] }); setF({ tipo: TIPOS_SEGURO[0], descripcion: "", localidad: "", provincia: "" }); }}>
+          <Plus size={17} strokeWidth={2.6} /> Solicitar cotización
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ============================ PRESUPUESTO CARD ============================ */
 function PresupuestoCard({ pres, accent, soft, onOpen }) {
   const ab = (ACT_LABELS[pres.actividad] || ACT_LABELS.agricola).badge;
+  const cats = pres.categorias || (pres.categoria ? [pres.categoria] : []);
+  const productos = pres.productos || [];
   return (
     <div className="cr-card" onClick={onOpen}>
       <div className="cr-card-main">
@@ -1453,10 +1818,11 @@ function PresupuestoCard({ pres, accent, soft, onOpen }) {
             <span className="cr-card-cargo">{pres.titulo.length > 40 ? pres.titulo.slice(0, 40) + "…" : pres.titulo}</span>
             <span className="cr-badge" style={{ background: ab.bg, color: ab.c }}>{ab.t}</span>
           </div>
-          <div className="cr-card-route"><MapPin size={14} color="#9ca3af" /><span>{pres.localidad}, {pres.provincia} · {pres.categoria}</span></div>
+          <div className="cr-card-route"><MapPin size={14} color="#9ca3af" /><span>{pres.localidad}, {pres.provincia} · {cats.join(", ")}</span></div>
           <div className="cr-card-meta">
             <span className="cr-meta-item">· {pres.by}</span>
             <span className="cr-meta-item"><Calendar size={14} color="#9ca3af" /> {pres.date}</span>
+            {productos.length > 0 && <span className="cr-meta-item">{productos.length} producto{productos.length > 1 ? "s" : ""}</span>}
             {pres.respuestas.length > 0 && <span className="cr-offers">{pres.respuestas.length} cotización{pres.respuestas.length > 1 ? "es" : ""}</span>}
           </div>
         </div>
@@ -1469,14 +1835,75 @@ function PresupuestoCard({ pres, accent, soft, onOpen }) {
 /* ============================ PRESUPUESTO DETAIL ============================ */
 function PresupuestoDetail({ pres, role, accent, soft, onBack, onRespond }) {
   const ab = (ACT_LABELS[pres.actividad] || ACT_LABELS.agricola).badge;
-  const [precio, setPrecio] = useState("");
+  const cats = pres.categorias || (pres.categoria ? [pres.categoria] : []);
+  const productos = pres.productos || [];
+  const [cotItems, setCotItems] = useState(null); // null = todavía no subió la planilla de cotización
+  const [subiendo, setSubiendo] = useState(false);
+  const [errorArchivo, setErrorArchivo] = useState("");
+  const [nombreArchivo, setNombreArchivo] = useState("");
+  const [formasPago, setFormasPago] = useState([]);
   const [nota, setNota] = useState("");
   const [validez, setValidez] = useState("7 días");
-  const send = () => {
-    if (!precio) return;
-    onRespond(pres.id, { id: Date.now(), by: ROLES[role]?.user || "—", precio, nota, validez, status: "enviada" });
-    setPrecio(""); setNota("");
+  const [precioSimple, setPrecioSimple] = useState(""); // fallback si el pedido no tiene productos estructurados
+  const toggleFormaPago = (fp) => setFormasPago((fs) => fs.includes(fp) ? fs.filter((x) => x !== fp) : [...fs, fp]);
+
+  const ivaPctFrom = (s) => {
+    const n = Number(String(s).replace(",", ".").replace("%", "").trim());
+    return n === 10.5 || n === 21 ? n : (n || 0);
   };
+  const calcItem = (it) => {
+    const precioEnvase = Number(it.precioEnvase) || 0;
+    const cantidadNecesaria = Number(it.cantidadNecesaria) || 0;
+    const ivaPct = ivaPctFrom(it.iva);
+    const costoEnvio = Number(it.costoEnvio) || 0;
+    const ivaEnvioPct = ivaPctFrom(it.ivaEnvio);
+    const nombreComercial = String(it.nombreComercial || "").trim();
+    const observaciones = String(it.observaciones || "").trim();
+    const subtotal = precioEnvase * cantidadNecesaria;
+    const ivaMonto = subtotal * (ivaPct / 100);
+    const ivaEnvioMonto = costoEnvio * (ivaEnvioPct / 100);
+    return { ...it, precioEnvase, cantidadNecesaria, ivaPct, costoEnvio, ivaEnvioPct, nombreComercial, observaciones, subtotal, ivaMonto, ivaEnvioMonto, totalRow: subtotal + ivaMonto + costoEnvio + ivaEnvioMonto };
+  };
+  const itemsCalc = (cotItems || []).map(calcItem);
+  const neto = itemsCalc.reduce((s, it) => s + it.subtotal, 0);
+  const ivaTotal = itemsCalc.reduce((s, it) => s + it.ivaMonto, 0);
+  const envioTotal = itemsCalc.reduce((s, it) => s + it.costoEnvio, 0);
+  const ivaEnvioTotal = itemsCalc.reduce((s, it) => s + it.ivaEnvioMonto, 0);
+  const totalConIva = neto + ivaTotal + envioTotal + ivaEnvioTotal;
+
+  const itemsCompletos = productos.length > 0 && itemsCalc.length === productos.length && itemsCalc.every((it) => it.precioEnvase > 0 && it.envase && it.cantidadNecesaria > 0 && it.ivaPct > 0 && it.nombreComercial);
+  const canSend = productos.length > 0 ? itemsCompletos : precioSimple.trim() !== "";
+  const faltan = [];
+  if (productos.length > 0) {
+    if (!cotItems) faltan.push("subir la planilla de cotización completa");
+    else if (!itemsCompletos) faltan.push("completar nombre comercial, precio por envase, envase, cantidad necesaria e IVA para cada producto (costo de envío, IVA de envío y observaciones son opcionales)");
+  } else if (!precioSimple.trim()) faltan.push("el precio");
+
+  const handleUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setErrorArchivo(""); setSubiendo(true); setNombreArchivo(file.name);
+    try {
+      const filas = await leerPlanilla(file);
+      if (filas.length === 0) { setErrorArchivo("No encontré filas de productos en la planilla."); setCotItems(null); }
+      else setCotItems(filas);
+    } catch (err) {
+      setErrorArchivo(err.message || "No pude leer el archivo."); setCotItems(null);
+    } finally { setSubiendo(false); e.target.value = ""; }
+  };
+
+  const send = () => {
+    if (!canSend) return;
+    if (productos.length > 0) {
+      onRespond(pres.id, { id: Date.now(), by: ROLES[role]?.user || "—", items: itemsCalc, neto, ivaTotal, envioTotal, ivaEnvioTotal, total: totalConIva, formasPago, nota, validez, status: "enviada" });
+      setCotItems(null); setNombreArchivo(""); setErrorArchivo("");
+    } else {
+      onRespond(pres.id, { id: Date.now(), by: ROLES[role]?.user || "—", precio: precioSimple, formasPago, nota, validez, status: "enviada" });
+      setPrecioSimple("");
+    }
+    setFormasPago([]); setNota("");
+  };
+
   return (
     <div className="cr-content cr-fade">
       <button className="cr-breadcrumb" onClick={onBack}><ArrowLeft size={16} /> Volver</button>
@@ -1491,28 +1918,73 @@ function PresupuestoDetail({ pres, role, accent, soft, onBack, onRespond }) {
           </div>
         </div>
         <div className="cr-detail-grid">
-          <div><span className="cr-detail-k">Categoría</span><span className="cr-detail-v">{pres.categoria}</span></div>
+          <div><span className="cr-detail-k">Categorías</span><span className="cr-detail-v">{cats.join(", ") || "—"}</span></div>
           <div><span className="cr-detail-k">Solicitante</span><span className="cr-detail-v">{pres.by}</span></div>
           <div><span className="cr-detail-k">Localidad</span><span className="cr-detail-v">{pres.localidad}, {pres.provincia}</span></div>
           <div><span className="cr-detail-k">Fecha</span><span className="cr-detail-v">{pres.date}</span></div>
         </div>
-        <p style={{ fontSize: 13.5, color: "#374151", lineHeight: 1.6, margin: "16px 0 0", padding: "0 18px 18px" }}>{pres.descripcion}</p>
+        {productos.length > 0 && (
+          <div style={{ padding: "16px 18px 4px" }}>
+            <span className="cr-detail-k" style={{ display: "block", marginBottom: 8 }}>Productos solicitados</span>
+            <div className="cr-prod-list">
+              {productos.map((p, i) => (
+                <div className="cr-prod-item" key={i}>
+                  <span>{p.nombre}</span>
+                  <strong>{Number(p.cantidad).toLocaleString("es-AR")} {p.unidad === "l" ? "L" : "kg"}</strong>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {pres.descripcion && <p style={{ fontSize: 13.5, color: "#374151", lineHeight: 1.6, margin: "16px 0 0", padding: "0 18px 18px" }}>{pres.descripcion}</p>}
       </div>
 
       <h3 className="cr-h3">Cotizaciones recibidas ({pres.respuestas.length})</h3>
       {pres.respuestas.length === 0 && <p className="cr-empty">Todavía no hay cotizaciones para este pedido de presupuesto.</p>}
       {pres.respuestas.map((r) => (
-        <div className="cr-offer" key={r.id}>
-          <div className="cr-offer-av" style={{ background: soft, color: accent }}>{r.by.split(" ").map((w) => w[0]).slice(0, 2).join("")}</div>
-          <div className="cr-offer-info">
-            <div className="cr-offer-name">{r.by}</div>
-            {r.nota && <div className="cr-offer-note">"{r.nota}"</div>}
-            {r.validez && <div className="cr-offer-zona">Validez: {r.validez}</div>}
+        <div className="cr-quote-card" key={r.id}>
+          <div className="cr-offer" style={{ border: "none", padding: 0, marginBottom: r.items ? 12 : 0 }}>
+            <div className="cr-offer-av" style={{ background: soft, color: accent }}>{r.by.split(" ").map((w) => w[0]).slice(0, 2).join("")}</div>
+            <div className="cr-offer-info">
+              <div className="cr-offer-name">{r.by}</div>
+              {r.validez && <div className="cr-offer-zona">Validez: {r.validez}</div>}
+              {r.formasPago && r.formasPago.length > 0 && <div className="cr-offer-zona">Formas de pago: {r.formasPago.join(", ")}</div>}
+              {r.nota && <div className="cr-offer-note">"{r.nota}"</div>}
+            </div>
+            <div className="cr-offer-right">
+              <div className="cr-offer-price">{r.total != null ? peso(r.total) : r.precio}</div>
+              {r.neto != null && <div style={{ fontSize: 11, color: "#9ca3af" }}>Neto {peso(r.neto)} + IVA {peso(r.ivaTotal)}{r.envioTotal > 0 && ` + envío ${peso(r.envioTotal)}`}{r.ivaEnvioTotal > 0 && ` + IVA envío ${peso(r.ivaEnvioTotal)}`}</div>}
+              {r.items && r.items.length > 0 && (
+                <button type="button" className="cr-btn cr-btn-ghost" style={{ fontSize: 12 }}
+                  onClick={() => descargarCotizacionRecibida({ titulo: pres.titulo, categorias: cats, localidad: pres.localidad, provincia: pres.provincia, solicitante: pres.by, r })}>
+                  📥 Descargar cotización
+                </button>
+              )}
+              <a className="cr-btn cr-wpp" href="https://wa.me/" target="_blank" rel="noreferrer"><MessageCircle size={15} /> WhatsApp</a>
+            </div>
           </div>
-          <div className="cr-offer-right">
-            <div className="cr-offer-price">{r.precio}</div>
-            <a className="cr-btn cr-wpp" href="https://wa.me/" target="_blank" rel="noreferrer"><MessageCircle size={15} /> WhatsApp</a>
-          </div>
+          {r.items && r.items.length > 0 && (
+            <div className="cr-quote-items">
+              {r.items.map((it, i) => (
+                <div className="cr-quote-item" key={i}>
+                  <div className="cr-quote-item-head">
+                    <strong>{it.nombre}{it.nombreComercial ? ` — ${it.nombreComercial}` : ""}</strong>
+                    <span>Pedido: {it.cantidad} {unidadFromText(it.unidad) === "l" ? "L" : "kg"}</span>
+                  </div>
+                  <div className="cr-quote-item-body">
+                    <span><b>Envase:</b> {it.envase}</span>
+                    <span><b>Precio por envase:</b> {peso(it.precioEnvase)}</span>
+                    <span><b>Cantidad necesaria:</b> {it.cantidadNecesaria}</span>
+                    <span><b>IVA:</b> {it.ivaPct}%</span>
+                    {it.costoEnvio > 0 && <span><b>Costo de envío:</b> {peso(it.costoEnvio)}</span>}
+                    {it.ivaEnvioPct > 0 && <span><b>IVA de envío:</b> {it.ivaEnvioPct}%</span>}
+                    {it.observaciones && <span><b>Observaciones:</b> {it.observaciones}</span>}
+                    <span style={{ fontWeight: 700, color: "#166534" }}><b>Subtotal + IVA:</b> {peso(it.totalRow)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       ))}
 
@@ -1520,15 +1992,91 @@ function PresupuestoDetail({ pres, role, accent, soft, onBack, onRespond }) {
         <>
           <h3 className="cr-h3">Enviar cotización</h3>
           <div className="cr-form">
-            <div className="cr-form-grid">
-              <div className="cr-field"><label>Precio total</label><input value={precio} onChange={(e) => setPrecio(e.target.value)} placeholder="Ej: $12.500.000 + IVA" /></div>
-              <div className="cr-field"><label>Validez</label>
-                <select value={validez} onChange={(e) => setValidez(e.target.value)}><option>7 días</option><option>15 días</option><option>30 días</option></select>
+            {productos.length > 0 ? (
+              <>
+                <div className="cr-planilla-box" style={{ margin: 0 }}>
+                  <div className="cr-planilla-step">
+                    <span className="cr-planilla-n" style={{ background: accent }}>1</span>
+                    <div>
+                      <strong>Descargá la planilla</strong>
+                      <p>Ya viene con lo que pidieron (producto, cantidad, unidad). Completá precio por envase, envase, cantidad necesaria e IVA.</p>
+                    </div>
+                    <button type="button" className="cr-btn cr-btn-ghost" style={{ fontSize: 13, flexShrink: 0 }}
+                      onClick={() => descargarPlanillaCotizacion({ titulo: pres.titulo, categorias: cats, localidad: pres.localidad, provincia: pres.provincia, solicitante: pres.by, productos, comercio: ROLES[role]?.user || "—" })}>
+                      📥 Descargar planilla
+                    </button>
+                  </div>
+                  <div className="cr-planilla-step">
+                    <span className="cr-planilla-n" style={{ background: accent }}>2</span>
+                    <div>
+                      <strong>Subí la planilla completa</strong>
+                      <p>Con eso armamos tu cotización, producto por producto, con IVA incluido.</p>
+                    </div>
+                    <label className="cr-btn cr-btn-primary" style={{ background: accent, fontSize: 13, flexShrink: 0, cursor: "pointer" }}>
+                      {subiendo ? "Leyendo…" : "📤 Subir planilla"}
+                      <input type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={handleUpload} disabled={subiendo} />
+                    </label>
+                  </div>
+                  {errorArchivo && <p className="cr-hint" style={{ color: "#dc2626" }}>{errorArchivo}</p>}
+                  {nombreArchivo && !errorArchivo && cotItems && (
+                    <div style={{ marginTop: 10 }}>
+                      <p className="cr-hint" style={{ color: "#166534", fontWeight: 600 }}><CheckCircle2 size={14} style={{ verticalAlign: -2, marginRight: 4 }} />{nombreArchivo} cargada</p>
+                      <div className="cr-quote-items">
+                        {itemsCalc.map((it, i) => (
+                          <div className="cr-quote-item" key={i}>
+                            <div className="cr-quote-item-head"><strong>{it.nombre}{it.nombreComercial ? ` — ${it.nombreComercial}` : ""}</strong><span>Pedido: {it.cantidad} {unidadFromText(it.unidad) === "l" ? "L" : "kg"}</span></div>
+                            <div className="cr-quote-item-body">
+                              <span><b>Envase:</b> {it.envase || "—"}</span>
+                              <span><b>Precio por envase:</b> {it.precioEnvase ? peso(it.precioEnvase) : "—"}</span>
+                              <span><b>Cantidad necesaria:</b> {it.cantidadNecesaria || "—"}</span>
+                              <span><b>IVA:</b> {it.ivaPct ? it.ivaPct + "%" : "—"}</span>
+                              <span><b>Costo de envío:</b> {it.costoEnvio ? peso(it.costoEnvio) : "—"}</span>
+                              <span><b>IVA de envío:</b> {it.ivaEnvioPct ? it.ivaEnvioPct + "%" : "—"}</span>
+                              {it.observaciones && <span><b>Observaciones:</b> {it.observaciones}</span>}
+                              <span style={{ fontWeight: 700, color: "#166534" }}><b>Subtotal + IVA:</b> {peso(it.totalRow)}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="cr-hint" style={{ fontWeight: 700, color: "#166534", marginTop: 10 }}>Neto: {peso(neto)} · IVA: {peso(ivaTotal)}{envioTotal > 0 && ` · Envío: ${peso(envioTotal)}`}{ivaEnvioTotal > 0 && ` · IVA envío: ${peso(ivaEnvioTotal)}`} · Total: {peso(totalConIva)}</p>
+                    </div>
+                  )}
+                </div>
+                <div className="cr-field full" style={{ marginTop: 16 }}>
+                  <label>Formas de pago que se comercializa (opcional)</label>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {FORMAS_PAGO_COMERCIO.map((fp) => {
+                      const on = formasPago.includes(fp);
+                      return (
+                        <button key={fp} type="button" onClick={() => toggleFormaPago(fp)}
+                          className="cr-btn" style={{ fontSize: 13, padding: "7px 14px", borderRadius: 20, border: `1px solid ${on ? accent : "#e5e7eb"}`, background: on ? accent + "1a" : "#fff", color: on ? accent : "#4b5563", fontWeight: on ? 600 : 500 }}>
+                          {on && <Check size={13} style={{ marginRight: 4, verticalAlign: -2 }} />}{fp}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="cr-form-grid" style={{ marginTop: 14 }}>
+                  <div className="cr-field"><label>Validez de la cotización</label>
+                    <select value={validez} onChange={(e) => setValidez(e.target.value)}><option>7 días</option><option>15 días</option><option>30 días</option></select>
+                  </div>
+                  <div className="cr-field full"><label>Notas adicionales (opcional)</label><input value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Ej: entrega en 48hs, stock limitado…" /></div>
+                </div>
+              </>
+            ) : (
+              <div className="cr-form-grid">
+                <div className="cr-field"><label>Precio total</label><input value={precioSimple} onChange={(e) => setPrecioSimple(e.target.value)} placeholder="Ej: $12.500.000 + IVA" /></div>
+                <div className="cr-field"><label>Validez</label>
+                  <select value={validez} onChange={(e) => setValidez(e.target.value)}><option>7 días</option><option>15 días</option><option>30 días</option></select>
+                </div>
+                <div className="cr-field full"><label>Detalle / condiciones</label><input value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Ej: Incluye entrega, pago a 30 días" /></div>
               </div>
-              <div className="cr-field full"><label>Detalle / condiciones</label><input value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Ej: Incluye entrega, pago a 30 días" /></div>
-            </div>
+            )}
+            {!canSend && faltan.length > 0 && (
+              <p className="cr-hint" style={{ color: "#b45309" }}>Para enviar, falta completar: {faltan.join(", ")}.</p>
+            )}
             <div style={{ marginTop: 12 }}>
-              <button className="cr-btn cr-btn-primary" style={{ background: accent }} onClick={send}>Enviar cotización <ArrowRight size={15} /></button>
+              <button className="cr-btn cr-btn-primary" style={{ background: accent, opacity: canSend ? 1 : 0.5 }} disabled={!canSend} onClick={send}>Enviar cotización <ArrowRight size={15} /></button>
             </div>
           </div>
         </>
@@ -1539,14 +2087,46 @@ function PresupuestoDetail({ pres, role, accent, soft, onBack, onRespond }) {
 }
 
 /* ============================ CREAR PRESUPUESTO ============================ */
-function CrearPresupuesto({ accent, onCreate }) {
+function CrearPresupuesto({ accent, role, onCreate }) {
   const [act, setAct] = useState("agricola");
-  const cats = [...(PRESUPUESTO_CATS[act] || []), ...(PRESUPUESTO_CATS.general || [])];
-  const [f, setF] = useState({ titulo: "", categoria: cats[0] || "", descripcion: "", localidad: "", provincia: "" });
+  const cats = act === "ganadero" ? PRESUPUESTO_CATS.ganadero : [...(PRESUPUESTO_CATS[act] || []), ...(PRESUPUESTO_CATS.general || [])];
+  const [f, setF] = useState({ titulo: "", categorias: [], descripcion: "", localidad: "", provincia: "" });
+  const [productos, setProductos] = useState(null); // null = todavía no subió planilla
+  const [subiendo, setSubiendo] = useState(false);
+  const [errorArchivo, setErrorArchivo] = useState("");
+  const [nombreArchivo, setNombreArchivo] = useState("");
+  const [avisoDatos, setAvisoDatos] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
-  const switchAct = (a) => { setAct(a); const nc = [...(PRESUPUESTO_CATS[a] || []), ...(PRESUPUESTO_CATS.general || [])]; setF({ ...f, categoria: nc[0] || "" }); };
-  const ok = f.titulo && f.categoria && f.provincia;
+  const switchAct = (a) => { setAct(a); setF({ ...f, categorias: [] }); };
+  const toggleCat = (c) => setF({ ...f, categorias: f.categorias.includes(c) ? f.categorias.filter((x) => x !== c) : [...f.categorias, c] });
   const al = ACT_LABELS[act] || ACT_LABELS.agricola;
+
+  const datosOk = f.titulo.trim() && f.categorias.length > 0 && f.provincia;
+  const productosValidos = (productos || []).filter((p) => p.nombre && Number(p.cantidad) > 0);
+  const ok = datosOk && productosValidos.length > 0;
+  const faltan = [];
+  if (!f.titulo.trim()) faltan.push("el título");
+  if (f.categorias.length === 0) faltan.push("al menos una categoría");
+  if (!f.provincia) faltan.push("la provincia");
+  if (datosOk && productosValidos.length === 0) faltan.push("subir la planilla completa con al menos un producto");
+
+  const handleUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setErrorArchivo(""); setSubiendo(true); setNombreArchivo(file.name);
+    try {
+      const filas = await leerPlanilla(file);
+      const limpio = filas
+        .filter((r) => r.nombre && Number(r.cantidad) > 0)
+        .map((r) => ({ nombre: r.nombre, cantidad: Number(r.cantidad), unidad: unidadFromText(r.unidad) }));
+      if (limpio.length === 0) { setErrorArchivo("No encontré filas con producto y cantidad cargados."); setProductos(null); }
+      else setProductos(limpio);
+    } catch (err) {
+      setErrorArchivo(err.message || "No pude leer el archivo.");
+      setProductos(null);
+    } finally { setSubiendo(false); e.target.value = ""; }
+  };
+
   return (
     <div className="cr-fade">
       <div className="cr-section-head"><h2 className="cr-h2">Pedir Presupuesto</h2></div>
@@ -1560,23 +2140,88 @@ function CrearPresupuesto({ accent, onCreate }) {
           ))}
         </div>
         <div className="cr-form-grid">
-          <div className="cr-field full"><label>Título del pedido</label><input value={f.titulo} onChange={set("titulo")} placeholder="Ej: Agroquímicos para campaña gruesa 2026" /></div>
-          <div className="cr-field"><label>Categoría</label>
-            <select value={f.categoria} onChange={set("categoria")}>{cats.map((c) => <option key={c}>{c}</option>)}</select>
+          <div className="cr-field full"><label>Título del pedido</label><input value={f.titulo} onChange={set("titulo")} placeholder={act === "ganadero" ? "Ej: Campaña vacunación" : "Ej: Agroquímicos para campaña gruesa 2026"} /></div>
+          <div className="cr-field full"><label>Categorías (elegí una o varias — definen a qué comercios llega el pedido)</label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {cats.map((c) => {
+                const on = f.categorias.includes(c);
+                return (
+                  <button key={c} type="button" onClick={() => toggleCat(c)}
+                    className="cr-btn" style={{ fontSize: 13, padding: "7px 14px", borderRadius: 20, border: `1px solid ${on ? accent : "#e5e7eb"}`, background: on ? accent + "1a" : "#fff", color: on ? accent : "#4b5563", fontWeight: on ? 600 : 500 }}>
+                    {on && <Check size={13} style={{ marginRight: 4, verticalAlign: -2 }} />}{c}
+                  </button>
+                );
+              })}
+            </div>
           </div>
           <div className="cr-field">
             <label>Localidad de entrega</label>
             <LocationInput localidad={f.localidad} provincia={f.provincia} accent={accent} placeholder="Tu localidad"
               onLocalidad={(v) => setF({ ...f, localidad: v })} onProvincia={(v) => setF({ ...f, provincia: v })} />
           </div>
-          <div className="cr-field full"><label>Descripción detallada</label>
-            <textarea value={f.descripcion} onChange={set("descripcion")} rows={3} placeholder="Detallá qué necesitás, cantidades, superficie, marcas preferidas…" style={{ resize: "vertical", fontFamily: "inherit", fontSize: 13.5, padding: "10px 14px", borderRadius: 10, border: "1px solid #e5e7eb", width: "100%" }} />
-          </div>
         </div>
-        <p className="cr-hint">Tu pedido de presupuesto lo verán todos los comercios de la plataforma. Vas a recibir cotizaciones que podés comparar.</p>
+
+        <div className="cr-planilla-box">
+          <div className="cr-planilla-step">
+            <span className="cr-planilla-n" style={{ background: accent }}>1</span>
+            <div>
+              <strong>Descargá la planilla</strong>
+              <p>Trae membrete con tus datos y el pedido. Completá ahí Producto, Cantidad y Unidad.</p>
+            </div>
+            <button type="button" className="cr-btn cr-btn-ghost" style={{ fontSize: 13, flexShrink: 0 }}
+              onClick={() => {
+                if (!datosOk) { setErrorArchivo(""); setAvisoDatos(true); return; }
+                setAvisoDatos(false);
+                descargarPlanillaSolicitud({ titulo: f.titulo, categorias: f.categorias, localidad: f.localidad, provincia: f.provincia, solicitante: ROLES[role]?.user || "—" });
+              }}>
+              📥 Descargar planilla
+            </button>
+          </div>
+          <div className="cr-planilla-step">
+            <span className="cr-planilla-n" style={{ background: accent }}>2</span>
+            <div>
+              <strong>Subí la planilla completa</strong>
+              <p>El comercio va a ver ahí lo que pediste y va a completar precio, envase y demás para cotizarte.</p>
+            </div>
+            <label className="cr-btn cr-btn-primary" style={{ background: accent, fontSize: 13, flexShrink: 0, cursor: "pointer" }}>
+              {subiendo ? "Leyendo…" : "📤 Subir planilla"}
+              <input type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={handleUpload} disabled={subiendo} />
+            </label>
+          </div>
+          {avisoDatos && !datosOk && (
+            <p className="cr-hint" style={{ color: "#b45309" }}>Antes de descargar, completá arriba: {faltan.filter((x) => x !== "subir la planilla completa con al menos un producto").join(", ")}.</p>
+          )}
+          {errorArchivo && <p className="cr-hint" style={{ color: "#dc2626" }}>{errorArchivo}</p>}
+          {nombreArchivo && !errorArchivo && productosValidos.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <p className="cr-hint" style={{ color: "#166534", fontWeight: 600 }}><CheckCircle2 size={14} style={{ verticalAlign: -2, marginRight: 4 }} />{nombreArchivo} — {productosValidos.length} producto{productosValidos.length > 1 ? "s" : ""} cargado{productosValidos.length > 1 ? "s" : ""}</p>
+              <div className="cr-prod-list">
+                {productosValidos.map((p, i) => (
+                  <div className="cr-prod-item" key={i}>
+                    <span>{p.nombre}</span>
+                    <strong>{Number(p.cantidad).toLocaleString("es-AR")} {p.unidad === "l" ? "L" : "kg"}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="cr-field full" style={{ marginTop: 18 }}><label>Notas adicionales (opcional)</label>
+          <textarea value={f.descripcion} onChange={set("descripcion")} rows={3} placeholder="Superficie, marcas preferidas, forma de entrega…" style={{ resize: "vertical", fontFamily: "inherit", fontSize: 13.5, padding: "10px 14px", borderRadius: 10, border: "1px solid #e5e7eb", width: "100%" }} />
+        </div>
+
+        <p className="cr-hint">Tu pedido de presupuesto lo van a ver los comercios de las categorías que elegiste. Vas a recibir cotizaciones que podés comparar.</p>
+        {!ok && faltan.length > 0 && (
+          <p className="cr-hint" style={{ color: "#b45309" }}>Para publicar, falta completar: {faltan.join(", ")}.</p>
+        )}
         <div style={{ marginTop: 16 }}>
           <button className="cr-new" style={{ background: accent, opacity: ok ? 1 : 0.5 }} disabled={!ok}
-            onClick={() => { onCreate({ id: Date.now(), titulo: f.titulo, categoria: f.categoria, actividad: act, descripcion: f.descripcion, localidad: f.localidad, provincia: f.provincia, cp: f.cp, by: ROLES[role]?.user || "—", date: new Date().toISOString().slice(0, 10), respuestas: [] }); setF({ titulo: "", categoria: cats[0] || "", descripcion: "", localidad: "", provincia: "" }); }}>
+            onClick={() => {
+              onCreate({ id: Date.now(), titulo: f.titulo.trim(), categorias: f.categorias, actividad: act, productos: productosValidos, descripcion: f.descripcion, localidad: f.localidad, provincia: f.provincia, by: ROLES[role]?.user || "—", date: new Date().toISOString().slice(0, 10), respuestas: [] });
+              setF({ titulo: "", categorias: [], descripcion: "", localidad: "", provincia: "" });
+              setProductos(null); setNombreArchivo(""); setErrorArchivo("");
+            }}>
             <Plus size={17} strokeWidth={2.6} /> Publicar pedido de presupuesto
           </button>
         </div>
@@ -1611,7 +2256,7 @@ function MyJobCard({ order, accent, soft, onOpen }) {
           </div>
           <div className="cr-card-route">
             <MapPin size={14} color="#9ca3af" />
-            <span>{order.localidad} → {order.to}{order.km ? ` · ${order.km} km` : ""}</span>
+            <span>{order.localidad} → {order.to}{myOffer?.km ? ` · ${myOffer.km} km` : ""}</span>
           </div>
           <div className="cr-card-meta">
             <span className="cr-meta-item"><Weight size={14} color="#9ca3af" /> {Number(order.kilos).toLocaleString("es-AR")} kg</span>
@@ -1642,12 +2287,18 @@ export default function CarretaApp() {
   const [selected, setSelected] = useState(null);
   const [selService, setSelService] = useState(null);
   const [selSolicitud, setSelSolicitud] = useState(null);
+  const [selSeguroSolicitud, setSelSeguroSolicitud] = useState(null);
   const [orders, setOrders] = useState(INITIAL_ORDERS);
   const [services, setServices] = useState(INITIAL_SERVICES);
   const [solicitudes, setSolicitudes] = useState(INITIAL_SOLICITUDES);
+  const [segurosSolicitudes, setSegurosSolicitudes] = useState(INITIAL_SEGUROS_SOLICITUDES);
   const [locFilter, setLocFilter] = useState("");
   const [svcType, setSvcType] = useState("Todos");
   const [svcLocFilter, setSvcLocFilter] = useState("");
+  const [misLocalidadesComercio, setMisLocalidadesComercio] = useState([{ localidad: ROLES.comercio.localidad, provincia: ROLES.comercio.provincia }]);
+  const [verTodasComercio, setVerTodasComercio] = useState(false);
+  const [misLocalidadesSeguros, setMisLocalidadesSeguros] = useState([{ localidad: ROLES.seguros.localidad, provincia: ROLES.seguros.provincia }]);
+  const [verTodasSeguros, setVerTodasSeguros] = useState(false);
   const [presupuestos, setPresupuestos] = useState(INITIAL_PRESUPUESTOS);
   const [selPresupuesto, setSelPresupuesto] = useState(null);
   const [actFilter, setActFilter] = useState("ambos");
@@ -1655,9 +2306,9 @@ export default function CarretaApp() {
   const R = role ? ROLES[role] : null;
 
   const pickRole = (r) => { setRole(r); setTab(ROLES[r].tabs[0].id); setScreen("panel"); clearSel(); };
-  const clearSel = () => { setSelected(null); setSelService(null); setSelSolicitud(null); setSelPresupuesto(null); };
+  const clearSel = () => { setSelected(null); setSelService(null); setSelSolicitud(null); setSelPresupuesto(null); setSelSeguroSolicitud(null); };
   const back = () => {
-    if (selected || selService || selSolicitud || selPresupuesto) { clearSel(); return; }
+    if (selected || selService || selSolicitud || selPresupuesto || selSeguroSolicitud) { clearSel(); return; }
     setScreen("landing"); setRole(null);
   };
   const switchRole = (r) => { setRole(r); setTab(ROLES[r].tabs[0].id); clearSel(); };
@@ -1681,12 +2332,19 @@ export default function CarretaApp() {
     }
   }));
   const reportEntrega = (orderId, entrega) => setOrders((os) => os.map((o) => o.id !== orderId ? o : { ...o, entrega }));
-  const confirmRecepcion = (orderId) => setOrders((os) => os.map((o) => o.id !== orderId ? o : { ...o, recepcion: { fecha: new Date().toISOString().slice(0, 10), by: "María González" } }));
+  const confirmRecepcion = (orderId, extra) => setOrders((os) => os.map((o) => o.id !== orderId ? o : { ...o, recepcion: { fecha: new Date().toISOString().slice(0, 10), by: "María González" }, acuerdoFinal: extra?.acuerdoFinal || "", formaPago: extra?.formaPago || "" }));
   const calificar = (orderId, quien, calif) => setOrders((os) => os.map((o) => o.id !== orderId ? o : { ...o, calificaciones: { ...(o.calificaciones || {}), [quien]: calif } }));
   const editOrder = (orderId, changes) => setOrders((os) => os.map((o) => o.id !== orderId ? o : { ...o, ...changes }));
   const createService = (svc) => { setServices((ss) => [svc, ...ss]); setTab("misservicios"); };
   const createSolicitud = (sol) => { setSolicitudes((ss) => [sol, ...ss]); };
   const respondSolicitud = (solId, resp) => setSolicitudes((ss) => ss.map((s) => s.id !== solId ? s : { ...s, respuestas: [...s.respuestas, resp] }));
+  const createSeguroSolicitud = (sol) => { setSegurosSolicitudes((ss) => [sol, ...ss]); };
+  const respondSeguroSolicitud = (solId, resp) => setSegurosSolicitudes((ss) => ss.map((s) => s.id !== solId ? s : { ...s, respuestas: [...s.respuestas, resp] }));
+  const aceptarPolizaSeguro = (solId, respId) => setSegurosSolicitudes((ss) => ss.map((s) => {
+    if (s.id !== solId) return s;
+    const poliza = "POL-" + String(Date.now()).slice(-8);
+    return { ...s, respuestas: s.respuestas.map((r) => r.id !== respId ? r : { ...r, status: "activa", poliza }) };
+  }));
   const createPresupuesto = (p) => { setPresupuestos((ps) => [p, ...ps]); };
   const respondPresupuesto = (pId, resp) => setPresupuestos((ps) => ps.map((p) => p.id !== pId ? p : { ...p, respuestas: [...p.respuestas, resp] }));
   const uploadCpe = (orderId, offerId, vehIdx, cpeData) => setOrders((os) => os.map((o) => {
@@ -1726,12 +2384,37 @@ export default function CarretaApp() {
   const selectedSvc = services.find((s) => s.id === selService);
   const selectedSol = solicitudes.find((s) => s.id === selSolicitud);
   const selectedPres = presupuestos.find((p) => p.id === selPresupuesto);
-  const hasDetail = selectedOrder || selectedSvc || selectedSol || selectedPres;
+  const selectedSeguroSol = segurosSolicitudes.find((s) => s.id === selSeguroSolicitud);
+  const hasDetail = selectedOrder || selectedSvc || selectedSol || selectedPres || selectedSeguroSol;
 
   // Solicitudes propias del rol actual
   const mySolicitudes = useMemo(() => solicitudes.filter((s) => s.by === (R ? R.user : "")), [solicitudes, R]);
   // Presupuestos propios del productor
   const myPresupuestos = useMemo(() => presupuestos.filter((p) => p.by === (R ? R.user : "")), [presupuestos, R]);
+  // Solicitudes de seguros propias del rol actual (productor / transportista)
+  const mySegurosSolicitudes = useMemo(() => segurosSolicitudes.filter((s) => s.by === (R ? R.user : "")), [segurosSolicitudes, R]);
+
+  // Filtrado por "Mis Localidades" — comercio y seguros ven primero lo de sus zonas de cobertura
+  const provinciasComercio = useMemo(() => misLocalidadesComercio.map((l) => l.provincia), [misLocalidadesComercio]);
+  const solicitudesFiltradas = useMemo(() => verTodasComercio ? solicitudes : solicitudes.filter((s) => provinciasComercio.includes(s.provincia)), [solicitudes, provinciasComercio, verTodasComercio]);
+  const presupuestosFiltrados = useMemo(() => verTodasComercio ? presupuestos : presupuestos.filter((p) => provinciasComercio.includes(p.provincia)), [presupuestos, provinciasComercio, verTodasComercio]);
+  const provinciasSeguros = useMemo(() => misLocalidadesSeguros.map((l) => l.provincia), [misLocalidadesSeguros]);
+  const segurosSolicitudesFiltradas = useMemo(() => verTodasSeguros ? segurosSolicitudes : segurosSolicitudes.filter((s) => provinciasSeguros.includes(s.provincia)), [segurosSolicitudes, provinciasSeguros, verTodasSeguros]);
+  const addLocalidadComercio = (l) => setMisLocalidadesComercio((ls) => ls.some((x) => x.localidad === l.localidad && x.provincia === l.provincia) ? ls : [...ls, l]);
+  const removeLocalidadComercio = (i) => setMisLocalidadesComercio((ls) => ls.filter((_, j) => j !== i));
+  const addLocalidadSeguros = (l) => setMisLocalidadesSeguros((ls) => ls.some((x) => x.localidad === l.localidad && x.provincia === l.provincia) ? ls : [...ls, l]);
+  const removeLocalidadSeguros = (i) => setMisLocalidadesSeguros((ls) => ls.filter((_, j) => j !== i));
+
+  // Alertas: cantidad de respuestas/ofertas recibidas, según el rol
+  const misRespuestasSolicitudes = useMemo(() => mySolicitudes.reduce((sum, s) => sum + (s.respuestas ? s.respuestas.length : 0), 0), [mySolicitudes]);
+  const misRespuestasPresupuestos = useMemo(() => myPresupuestos.reduce((sum, p) => sum + (p.respuestas ? p.respuestas.length : 0), 0), [myPresupuestos]);
+  const misRespuestasSeguros = useMemo(() => mySegurosSolicitudes.reduce((sum, s) => sum + (s.respuestas ? s.respuestas.length : 0), 0), [mySegurosSolicitudes]);
+  const ofertasPendientes = useMemo(() => productorOrders
+    .filter((o) => !(o.offers || []).some((of) => of.status === "aceptada"))
+    .reduce((sum, o) => sum + (o.offers ? o.offers.length : 0), 0), [productorOrders]);
+  const solicitudesSinResponder = useMemo(() => solicitudes.filter((s) => !(s.respuestas || []).some((r) => r.by === ME_COMERCIO)).length, [solicitudes]);
+  const presupuestosSinResponder = useMemo(() => presupuestos.filter((p) => !(p.respuestas || []).some((r) => r.by === ME_COMERCIO)).length, [presupuestos]);
+  const segurosSinResponder = useMemo(() => segurosSolicitudes.filter((s) => !(s.respuestas || []).some((r) => r.by === ME_SEGUROS)).length, [segurosSolicitudes]);
   // Servicios propios del contratista
   const myServices = useMemo(() => services.filter((s) => s.owner === (ME_TRANSPORTISTA)), [services]);
   // Servicios filtrados para el Productor (tipo + cercanía)
@@ -1748,17 +2431,23 @@ export default function CarretaApp() {
     return list;
   }, [services, svcType, svcLocFilter]);
 
-  // Exportar historial a CSV/Excel
+  // Exportar historial a Excel (.xlsx real, columnas propias — nada de texto separado por comas)
   const exportarHistorial = (lista, filename) => {
-    const rows = [["ID","Actividad","Carga","Origen","Destino","Km","Cantidad","Camiones","Fecha","Productor","Estado","Transportista","Precio"]];
+    const rows = [["ID","Actividad","Carga","Origen","Destino","Km","Cantidad","Camiones","Fecha","Productor","Estado","Transportista","Precio","Acuerdo final","Forma de pago"]];
     lista.forEach((o) => {
       const st = orderStatus(o);
       const acc = (o.offers || []).find((of) => of.status === "aceptada");
-      rows.push([o.id, o.actividad, o.cargo, o.localidad + " " + o.provincia, o.to, o.km || "", o.kilos, o.camiones, o.date, o.owner, st, acc ? acc.by : "", acc ? acc.price : ""]);
+      rows.push([o.id, o.actividad, o.cargo, o.localidad + " " + o.provincia, o.to, acc ? acc.km || "" : "", o.kilos, o.camiones, o.date, o.owner, st, acc ? acc.by : "", acc ? acc.price : "", o.acuerdoFinal || "", o.formaPago || ""]);
     });
-    const csv = rows.map((r) => r.map((c) => '"' + String(c).replace(/"/g, '""') + '"').join(",")).join("\n");
-    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
-    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws["!cols"] = [
+      { wch: 14 }, { wch: 11 }, { wch: 12 }, { wch: 22 }, { wch: 18 }, { wch: 8 },
+      { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 20 }, { wch: 13 }, { wch: 22 },
+      { wch: 12 }, { wch: 26 }, { wch: 20 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Historial");
+    XLSX.writeFile(wb, filename.replace(/\.csv$/i, ".xlsx"));
   };
 
   return (
@@ -1936,9 +2625,70 @@ export default function CarretaApp() {
         .cr-reassign-form{ width:100%; margin-top:10px; padding:14px; background:#fffbeb; border:1px solid #fde68a; border-radius:10px; }
         .cr-dom-chofer{ font-size:11.5px; color:#6b7280; text-transform:none; letter-spacing:0; font-weight:500; }
         .cr-offer-desglose{ display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:#6b7280; margin-top:6px; padding-top:6px; border-top:1px dashed #e5e7eb; }
+
+        .cr-prod-table{ display:flex; flex-direction:column; gap:6px; }
+
+        .cr-planilla-box{ margin-top:18px; padding:16px; background:#f9fafb; border:1px solid #eef0f2; border-radius:12px; }
+        .cr-planilla-step{ display:flex; align-items:center; gap:12px; padding:8px 0; }
+        .cr-planilla-step + .cr-planilla-step{ border-top:1px dashed #e5e7eb; }
+        .cr-planilla-n{ flex-shrink:0; width:24px; height:24px; border-radius:50%; color:#fff; font-size:12.5px; font-weight:700; display:flex; align-items:center; justify-content:center; }
+        .cr-planilla-step > div{ flex:1; }
+        .cr-planilla-step strong{ font-size:13.5px; color:#1f2937; display:block; }
+        .cr-planilla-step p{ font-size:12px; color:#6b7280; margin:2px 0 0; }
+        @media (max-width:640px){
+          .cr-planilla-step{ flex-wrap:wrap; }
+          .cr-planilla-step > div{ flex-basis:100%; order:2; margin-top:6px; }
+          .cr-planilla-step > button, .cr-planilla-step > label{ order:3; margin-left:36px; }
+        }
+        .cr-prod-head{ display:grid; grid-template-columns:1fr 110px 100px 32px; gap:8px; padding:0 4px; font-size:11.5px; font-weight:700; color:#9ca3af; text-transform:uppercase; letter-spacing:.04em; }
+        .cr-prod-row{ display:grid; grid-template-columns:1fr 110px 100px 32px; gap:8px; align-items:center; }
+        .cr-prod-row input, .cr-prod-row select{ width:100%; padding:9px 12px; border-radius:9px; border:1px solid #e5e7eb; font-size:13.5px; font-family:inherit; background:#fff; }
+        .cr-prod-row input:focus, .cr-prod-row select:focus{ outline:none; border-color:#86efac; }
+        .cr-prod-del{ display:flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:8px; border:1px solid #e5e7eb; background:#fff; color:#9ca3af; cursor:pointer; }
+        .cr-prod-del:hover:not(:disabled){ background:#fef2f2; border-color:#fecaca; color:#dc2626; }
+        .cr-prod-del:disabled{ opacity:.35; cursor:not-allowed; }
+        .cr-prod-list{ display:flex; flex-direction:column; gap:6px; margin-top:4px; }
+        .cr-prod-item{ display:flex; justify-content:space-between; gap:10px; font-size:13px; color:#374151; padding:8px 12px; background:#f9fafb; border-radius:8px; }
+        .cr-prod-item strong{ color:#1f2937; }
+
+        .cr-quote-card{ background:#fff; border:1px solid #eef0f2; border-radius:12px; padding:14px 16px; margin-bottom:10px; }
+        .cr-quote-items{ display:flex; flex-direction:column; gap:8px; padding-top:10px; border-top:1px dashed #e5e7eb; }
+        .cr-quote-item{ background:#f9fafb; border-radius:9px; padding:10px 12px; }
+        .cr-quote-item-head{ display:flex; justify-content:space-between; align-items:baseline; gap:8px; font-size:13px; margin-bottom:5px; }
+        .cr-quote-item-head span{ font-size:11.5px; color:#9ca3af; }
+        .cr-quote-item-body{ display:flex; flex-wrap:wrap; gap:6px 16px; font-size:12px; color:#4b5563; }
+        .cr-quote-item-body b{ color:#374151; font-weight:600; }
+        .cr-quote-form-item{ background:#f9fafb; border-radius:10px; padding:12px 14px; margin-bottom:12px; }
+        .cr-quote-form-item-head{ font-size:13.5px; font-weight:700; color:#1f2937; margin-bottom:8px; }
+        .cr-quote-form-item-head span{ font-weight:500; color:#9ca3af; font-size:12px; }
+        @media (max-width:640px){
+          .cr-prod-head{ display:none; }
+          .cr-prod-row{ grid-template-columns:1fr 32px; grid-template-areas:"nombre del" "cant unidad"; row-gap:6px; padding-bottom:10px; border-bottom:1px dashed #e5e7eb; margin-bottom:4px; }
+          .cr-prod-row input:first-child{ grid-area:nombre; }
+          .cr-prod-row input:nth-child(2){ grid-area:cant; }
+          .cr-prod-row select{ grid-area:unidad; }
+          .cr-prod-row .cr-prod-del{ grid-area:del; }
+        }
         .cr-offer-desglose span{ font-weight:600; }
         .cr-zona-chip{ display:inline-flex; align-items:center; gap:4px; padding:4px 10px; background:#fef3c7; color:#92400e; border-radius:16px; font-size:12px; font-weight:600; }
         .cr-card-zonas{ font-size:11.5px; color:#d97706; margin-top:3px; font-weight:500; }
+
+        .cr-mislocs{ background:#f9fafb; border:1px solid #eef0f2; border-radius:12px; padding:14px 16px; margin-bottom:18px; }
+        .cr-mislocs-head{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:13px; margin-bottom:10px; }
+        .cr-mislocs-head strong{ color:#1f2937; }
+        .cr-mislocs-head span{ color:#6b7280; font-size:12px; }
+        .cr-mislocs-chips{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+        .cr-misloc-chip{ display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:16px; font-size:12.5px; font-weight:600; }
+        .cr-misloc-chip button{ display:flex; background:none; border:none; padding:0; cursor:pointer; opacity:.7; color:inherit; }
+        .cr-misloc-chip button:hover{ opacity:1; }
+        .cr-mislocs-add{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+        .cr-mislocs-add .cr-loc-input{ flex:1; min-width:220px; }
+        .cr-mislocs-toggle{ display:flex; align-items:center; gap:7px; font-size:12.5px; color:#6b7280; margin-top:12px; cursor:pointer; }
+        .cr-mislocs-toggle input{ cursor:pointer; }
+        @media (max-width:640px){
+          .cr-mislocs-add{ flex-direction:column; align-items:stretch; }
+          .cr-mislocs-add .cr-loc-input{ min-width:0; }
+        }
         .cr-cats-grid{ display:flex; flex-direction:column; gap:6px; }
         .cr-cat-row{ display:flex; align-items:center; gap:10px; }
         .cr-cat-label{ font-size:13px; font-weight:600; color:#374151; min-width:120px; }
@@ -2004,6 +2754,49 @@ export default function CarretaApp() {
         .cr-demo-btn{ border:none; cursor:pointer; font-family:inherit; font-size:12.5px; font-weight:600; padding:6px 12px; border-radius:8px; background:transparent; color:#6b7280; }
 
         @media (max-width:680px){ .cr-detail-grid{ grid-template-columns:repeat(2,1fr); } .cr-form-grid{ grid-template-columns:1fr; } }
+
+        /* ---------- MOBILE ---------- */
+        @media (max-width:640px){
+          .cr-landing{ padding:40px 16px; }
+          .cr-logo-name{ font-size:24px; }
+          .cr-tagline{ font-size:14px; }
+          .cr-stats{ gap:28px; margin-top:26px; }
+          .cr-cards{ gap:12px; }
+          .cr-lcard{ flex:1 1 100%; max-width:100%; padding:20px; }
+          .cr-login-box{ max-width:100%; }
+
+          .cr-header-top{ padding:0 14px; gap:10px; height:58px; }
+          .cr-title{ font-size:14.5px; }
+          .cr-sub{ display:none; }
+          .cr-tabs{ padding:0 10px; gap:2px; overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none; }
+          .cr-tabs::-webkit-scrollbar{ display:none; }
+          .cr-tab{ flex-shrink:0; padding:0 10px; font-size:13px; }
+          .cr-content{ padding:16px 14px 100px; }
+
+          .cr-form{ padding:16px; }
+          .cr-detail-card{ padding:16px; }
+          .cr-detail-grid{ grid-template-columns:1fr 1fr; gap:14px 16px; }
+
+          .cr-offer{ flex-wrap:wrap; }
+          .cr-offer-right{ flex-basis:100%; flex-direction:row; align-items:center; justify-content:space-between; margin-top:10px; }
+          .cr-cpe-row{ flex-wrap:wrap; }
+          .cr-cpe-actions{ flex-basis:100%; display:flex; gap:8px; margin-top:6px; }
+          .cr-cat-row{ flex-wrap:wrap; }
+          .cr-cat-label{ min-width:0; flex-basis:100%; }
+          .cr-job-line{ flex-wrap:wrap; }
+          .cr-job-loc{ min-width:0; flex-basis:100%; }
+          .cr-job-meta{ margin-left:0; }
+          .cr-veh-row{ flex-wrap:wrap; }
+          .cr-veh-row .cr-field{ flex:1 1 130px; }
+          .cr-loc-input{ flex-wrap:wrap; }
+          .cr-loc-prov{ flex:1 1 100%; }
+          .cr-cpbar{ flex-wrap:wrap; }
+
+          .cr-demo{ left:8px; right:56px; bottom:12px; padding:4px; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+          .cr-demo-lbl{ display:none; }
+          .cr-demo-btn{ padding:6px 9px; font-size:11.5px; flex-shrink:0; }
+          .cr-help{ width:36px; height:36px; bottom:12px; right:10px; }
+        }
       `}</style>
 
       {screen === "landing" && <Landing onPick={pickRole} />}
@@ -2021,7 +2814,14 @@ export default function CarretaApp() {
               <div className="cr-tabs">
                 {R.tabs.map((t) => {
                   const on = tab === t.id;
-                  const badge = t.id === "mispedidos" ? mineBadge : t.id === "solicitudes" && role === "comercio" ? solicitudes.length : t.badge;
+                  const badge =
+                    t.id === "pedidos" ? (ofertasPendientes || null) :
+                    t.id === "mispedidos" ? mineBadge :
+                    t.id === "solicitudes" ? (role === "comercio" ? (solicitudesSinResponder || null) : (misRespuestasSolicitudes || null)) :
+                    t.id === "presupuestos" ? (role === "comercio" ? (presupuestosSinResponder || null) : (misRespuestasPresupuestos || null)) :
+                    t.id === "seguros" ? (misRespuestasSeguros || null) :
+                    t.id === "segsolicitudes" ? (segurosSinResponder || null) :
+                    t.badge;
                   return (
                     <button key={t.id} className="cr-tab" onClick={() => { setTab(t.id); clearSel(); }}
                       style={on ? { color: R.accent, borderBottomColor: R.accent } : undefined}>
@@ -2052,6 +2852,10 @@ export default function CarretaApp() {
             <PresupuestoDetail pres={selectedPres} role={role} accent={R.accent} soft={R.soft}
               onBack={back} onRespond={respondPresupuesto} />
           )}
+          {selectedSeguroSol && (
+            <SeguroSolicitudDetail sol={selectedSeguroSol} role={role} accent={R.accent} soft={R.soft}
+              onBack={back} onRespond={respondSeguroSolicitud} onAceptar={aceptarPolizaSeguro} />
+          )}
 
           {!hasDetail && (
             <div className="cr-content">
@@ -2069,7 +2873,7 @@ export default function CarretaApp() {
                 <div className="cr-fade">
                   <div className="cr-section-head">
                     <h2 className="cr-h2">Historial ({historyOrders.length})</h2>
-                    {historyOrders.length > 0 && <button className="cr-new" style={{ background: R.accent }} onClick={() => exportarHistorial(historyOrders, "carreta-historial.csv")}>📥 Exportar Excel</button>}
+                    {historyOrders.length > 0 && <button className="cr-new" style={{ background: R.accent }} onClick={() => exportarHistorial(historyOrders, "carreta-historial.xlsx")}>📥 Exportar Excel</button>}
                   </div>
                   <p className="cr-hint" style={{ marginTop: -10, marginBottom: 14 }}>Pedidos finalizados y cancelados.</p>
                   {historyOrders.length === 0 && <p className="cr-empty">No hay pedidos finalizados todavía.</p>}
@@ -2152,7 +2956,7 @@ export default function CarretaApp() {
                   <div className="cr-fade">
                     <div className="cr-section-head">
                       <h2 className="cr-h2">Historial ({histMine.length})</h2>
-                      {histMine.length > 0 && <button className="cr-new" style={{ background: R.accent }} onClick={() => exportarHistorial(histMine, "carreta-historial-transportista.csv")}>📥 Exportar Excel</button>}
+                      {histMine.length > 0 && <button className="cr-new" style={{ background: R.accent }} onClick={() => exportarHistorial(histMine, "carreta-historial-transportista.xlsx")}>📥 Exportar Excel</button>}
                     </div>
                     <p className="cr-hint" style={{ marginTop: -10, marginBottom: 14 }}>Viajes finalizados y cancelados.</p>
                     {histMine.length === 0 && <p className="cr-empty">No hay viajes finalizados todavía.</p>}
@@ -2197,9 +3001,13 @@ export default function CarretaApp() {
               {/* ========= COMERCIO ========= */}
               {role === "comercio" && tab === "solicitudes" && (
                 <div className="cr-fade">
-                  <div className="cr-section-head"><h2 className="cr-h2">Solicitudes de repuestos e insumos ({solicitudes.length})</h2></div>
-                  <p className="cr-hint" style={{ marginTop: -10, marginBottom: 18 }}>Solicitudes publicadas por productores, transportistas y contratistas. Respondé con tu precio y disponibilidad.</p>
-                  {solicitudes.map((s) => (<SolicitudCard key={s.id} sol={s} accent={R.accent} soft={R.soft} onOpen={() => setSelSolicitud(s.id)} />))}
+                  <div className="cr-section-head"><h2 className="cr-h2">Solicitudes de repuestos e insumos ({solicitudesFiltradas.length})</h2></div>
+                  <p className="cr-hint" style={{ marginTop: -10, marginBottom: 14 }}>Solicitudes publicadas por productores, transportistas y contratistas. Respondé con tu precio y disponibilidad.</p>
+                  <MisLocalidades localidades={misLocalidadesComercio} onAdd={addLocalidadComercio} onRemove={removeLocalidadComercio}
+                    verTodas={verTodasComercio} onToggleVerTodas={setVerTodasComercio} accent={R.accent} soft={R.soft} />
+                  {solicitudesFiltradas.length === 0 ? (
+                    <p className="cr-empty">No hay solicitudes {verTodasComercio ? "" : "en tus localidades "}por ahora.{verTodasComercio ? "" : " Agregá otra localidad o mirá todo el país."}</p>
+                  ) : solicitudesFiltradas.map((s) => (<SolicitudCard key={s.id} sol={s} accent={R.accent} soft={R.soft} onOpen={() => setSelSolicitud(s.id)} />))}
                 </div>
               )}
 
@@ -2220,7 +3028,7 @@ export default function CarretaApp() {
                 <div className="cr-fade">
                   <div className="cr-section-head"><h2 className="cr-h2">Mis Presupuestos ({myPresupuestos.length})</h2></div>
                   <p className="cr-hint" style={{ marginTop: -10, marginBottom: 12 }}>Pedí cotizaciones formales a los proveedores de la plataforma. Podés comparar las respuestas.</p>
-                  <CrearPresupuesto accent={R.accent} onCreate={createPresupuesto} />
+                  <CrearPresupuesto accent={R.accent} role={role} onCreate={createPresupuesto} />
                   <div style={{ marginTop: 22 }}>
                     {myPresupuestos.map((p) => (<PresupuestoCard key={p.id} pres={p} accent={R.accent} soft={R.soft} onOpen={() => setSelPresupuesto(p.id)} />))}
                   </div>
@@ -2230,11 +3038,99 @@ export default function CarretaApp() {
               {/* ========= PRESUPUESTOS (comercio: ve todos y cotiza) ========= */}
               {role === "comercio" && tab === "presupuestos" && (
                 <div className="cr-fade">
-                  <div className="cr-section-head"><h2 className="cr-h2">Pedidos de Presupuesto ({presupuestos.length})</h2></div>
-                  <p className="cr-hint" style={{ marginTop: -10, marginBottom: 18 }}>Pedidos de cotización publicados por productores. Enviá tu presupuesto con precio, condiciones y validez.</p>
-                  {presupuestos.map((p) => (<PresupuestoCard key={p.id} pres={p} accent={R.accent} soft={R.soft} onOpen={() => setSelPresupuesto(p.id)} />))}
+                  <div className="cr-section-head"><h2 className="cr-h2">Pedidos de Presupuesto ({presupuestosFiltrados.length})</h2></div>
+                  <p className="cr-hint" style={{ marginTop: -10, marginBottom: 14 }}>Pedidos de cotización publicados por productores. Enviá tu presupuesto con precio, condiciones y validez.</p>
+                  <MisLocalidades localidades={misLocalidadesComercio} onAdd={addLocalidadComercio} onRemove={removeLocalidadComercio}
+                    verTodas={verTodasComercio} onToggleVerTodas={setVerTodasComercio} accent={R.accent} soft={R.soft} />
+                  {presupuestosFiltrados.length === 0 ? (
+                    <p className="cr-empty">No hay pedidos de presupuesto {verTodasComercio ? "" : "en tus localidades "}por ahora.{verTodasComercio ? "" : " Agregá otra localidad o mirá todo el país."}</p>
+                  ) : presupuestosFiltrados.map((p) => (<PresupuestoCard key={p.id} pres={p} accent={R.accent} soft={R.soft} onOpen={() => setSelPresupuesto(p.id)} />))}
                 </div>
               )}
+
+              {/* ========= SEGUROS (para todos los roles salvo el propio Asesor: piden cotización y ven sus pólizas activas) ========= */}
+              {role !== "seguros" && tab === "seguros" && (() => {
+                const activos = mySegurosSolicitudes.filter((s) => (s.respuestas || []).some((r) => r.status === "activa"));
+                const pendientes = mySegurosSolicitudes.filter((s) => !(s.respuestas || []).some((r) => r.status === "activa"));
+                return (
+                  <div className="cr-fade">
+                    <div className="cr-section-head"><h2 className="cr-h2">Mis Seguros Activos ({activos.length})</h2></div>
+                    <p className="cr-hint" style={{ marginTop: -10, marginBottom: 12 }}>Pólizas ya contratadas, con su número de póliza.</p>
+                    {activos.length === 0 ? (
+                      <p className="cr-empty">Todavía no tenés seguros contratados.</p>
+                    ) : activos.map((s) => (<SeguroSolicitudCard key={s.id} sol={s} accent={R.accent} soft={R.soft} onOpen={() => setSelSeguroSolicitud(s.id)} />))}
+
+                    <div className="cr-section-head" style={{ marginTop: 26 }}><h2 className="cr-h2">Solicitar Cotización</h2></div>
+                    <p className="cr-hint" style={{ marginTop: -10, marginBottom: 12 }}>Pedí cotización de accidentes personales, ART, automotor, maquinaria, vida o seguros agrarios (granizo, inundación, sequía, cosecha). Un asesor te responde con precio y condiciones.</p>
+                    <CrearSeguroSolicitud accent={R.accent} role={role} onCreate={createSeguroSolicitud} />
+                    {pendientes.length > 0 && (
+                      <div style={{ marginTop: 22 }}>
+                        <h3 className="cr-h3">Solicitudes en curso ({pendientes.length})</h3>
+                        {pendientes.map((s) => (<SeguroSolicitudCard key={s.id} sol={s} accent={R.accent} soft={R.soft} onOpen={() => setSelSeguroSolicitud(s.id)} />))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* ========= SOLICITUDES DE SEGURO (Asesor de Seguros: ve todas y cotiza) ========= */}
+              {role === "seguros" && tab === "segsolicitudes" && (
+                <div className="cr-fade">
+                  <div className="cr-section-head"><h2 className="cr-h2">Solicitudes de Seguro ({segurosSolicitudesFiltradas.length})</h2></div>
+                  <p className="cr-hint" style={{ marginTop: -10, marginBottom: 14 }}>Pedidos de cotización publicados por productores y transportistas. Respondé con tu precio y condiciones.</p>
+                  <MisLocalidades localidades={misLocalidadesSeguros} onAdd={addLocalidadSeguros} onRemove={removeLocalidadSeguros}
+                    verTodas={verTodasSeguros} onToggleVerTodas={setVerTodasSeguros} accent={R.accent} soft={R.soft} />
+                  {segurosSolicitudesFiltradas.length === 0 ? (
+                    <p className="cr-empty">No hay solicitudes de seguro {verTodasSeguros ? "" : "en tus localidades "}por ahora.{verTodasSeguros ? "" : " Agregá otra localidad o mirá todo el país."}</p>
+                  ) : segurosSolicitudesFiltradas.map((s) => (<SeguroSolicitudCard key={s.id} sol={s} accent={R.accent} soft={R.soft} onOpen={() => setSelSeguroSolicitud(s.id)} />))}
+                </div>
+              )}
+
+              {/* ========= CARGAS ASEGURADAS (Asesor de Seguros) ========= */}
+              {role === "seguros" && tab === "cargas" && (() => {
+                const aseguradas = orders
+                  .map((o) => ({ o, acc: (o.offers || []).find((of) => of.status === "aceptada") }))
+                  .filter(({ acc }) => acc && Number(acc.seguro) > 0);
+                return (
+                  <div className="cr-fade">
+                    <div className="cr-section-head"><h2 className="cr-h2">Cargas Aseguradas ({aseguradas.length})</h2></div>
+                    <p className="cr-hint" style={{ marginTop: -10, marginBottom: 18 }}>Cargas con seguro contratado en la oferta confirmada. Usalo para revisar coberturas u ofrecer tu póliza.</p>
+                    {aseguradas.length === 0 ? (
+                      <p className="cr-empty">Todavía no hay cargas confirmadas con seguro contratado.</p>
+                    ) : aseguradas.map(({ o, acc }) => {
+                      const al = ACT_LABELS[o.actividad] || ACT_LABELS.agricola;
+                      const st = orderStatus(o);
+                      return (
+                        <div className="cr-card" key={o.id}>
+                          <div className="cr-card-main">
+                            <div className="cr-card-chip" style={{ background: R.soft }}><Shield size={20} color={R.accent} strokeWidth={2} /></div>
+                            <div className="cr-card-body">
+                              <div className="cr-card-titlerow">
+                                <span className="cr-card-cargo">{o.cargo}</span>
+                                <span className="cr-badge" style={{ background: al.badge.bg, color: al.badge.c }}>{al.badge.t}</span>
+                                <span className="cr-badge" style={{ background: "#f3e8ff", color: "#7e22ce" }}>{st}</span>
+                              </div>
+                              <div className="cr-card-route">
+                                <MapPin size={14} color="#9ca3af" />
+                                <span>{o.localidad} → {o.to}{acc.km ? ` · ${acc.km} km` : ""}</span>
+                              </div>
+                              <div className="cr-card-meta">
+                                <span className="cr-meta-item"><Shield size={14} color="#9ca3af" /> Seguro: {peso(acc.seguro || 0)}</span>
+                                <span className="cr-meta-item"><Truck size={14} color="#9ca3af" /> {acc.by}</span>
+                                <span className="cr-meta-item"><Calendar size={14} color="#9ca3af" /> {o.date}</span>
+                              </div>
+                              <div className="cr-card-meta" style={{ marginTop: 2 }}>
+                                <span className="cr-meta-item">Productor: {o.owner}</span>
+                                <span className="cr-meta-item">Peajes: {peso(acc.peajes || 0)}</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
           )}
         </>
@@ -2245,7 +3141,7 @@ export default function CarretaApp() {
       {screen === "panel" && (
         <div className="cr-demo">
           <span className="cr-demo-lbl">Vista</span>
-          {["productor", "transportista", "contratista", "comercio"].map((r) => (
+          {["productor", "transportista", "contratista", "comercio", "seguros"].map((r) => (
             <button key={r} className="cr-demo-btn" onClick={() => switchRole(r)}
               style={role === r ? { background: ROLES[r].soft, color: ROLES[r].accent } : undefined}>
               {ROLES[r].title.replace("Panel del ", "").replace("Panel de ", "")}
